@@ -21,7 +21,7 @@ export const config = {
   // Locally *.localhost resolves to this machine; production needs a wildcard domain
   // on a registrable domain separate from the site (see docs/ARCHITECTURE.md).
   contentTemplate: env.CONTENT_ORIGIN_TEMPLATE || `http://{token}.localhost:${contentPort}`,
-  // Origins allowed to frame works (the site itself).
+  // Trusted frontend origins: credentialed API access and work framing.
   siteOrigins: list(env.SITE_ORIGINS, `http://localhost:${port},http://127.0.0.1:${port}`),
   // Usernames that always hold the admin role; `npm run admin -- <name>` also promotes.
   admins: list(env.ADMIN_USERNAMES, '').map((name) => name.normalize('NFKC').toLowerCase()),
@@ -31,6 +31,7 @@ export const config = {
   capture: env.CAPTURE !== '0',
   captureChannel: env.CAPTURE_BROWSER ?? 'chrome',
   secureCookies: env.COOKIE_SECURE === '1',
+  cookieSameSite: env.COOKIE_SAME_SITE || 'Lax',
   trustProxy: env.TRUST_PROXY === '1',
 };
 

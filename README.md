@@ -31,12 +31,13 @@ npm test         # node --test test/*.test.mjs
 | `DIST_DIR` | `./dist` | 构建产物（数据包）目录 |
 | `DATA_DIR` | `./.data` | 数据库与运行数据目录 |
 | `CONTENT_ORIGIN_TEMPLATE` | `http://{token}.localhost:5180` | 作品 origin 模板，`{token}` 必须占满一个 host label；生产需独立泛域名 |
-| `SITE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 允许 iframe 嵌入作品的站点 origin（逗号分隔） |
+| `SITE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 可信前端 origin（逗号分隔，含协议与端口），同时允许凭据 CORS、API 写操作和 iframe 嵌入作品 |
 | `ADMIN_USERNAMES` | 空 | 始终持有管理员角色的用户名（逗号分隔） |
 | `CONTENT_CDN_ALLOWLIST` | `cdn.jsdelivr.net,unpkg.com,cdnjs.cloudflare.com,esm.sh,fonts.googleapis.com,fonts.gstatic.com` | 作品允许加载脚本/样式/字体/数据的公共 CDN 白名单 |
 | `CAPTURE` | 开（`0` 关闭） | 投稿作品的无头截图（Playwright + 本地 Chrome） |
 | `CAPTURE_BROWSER` | `chrome` | 截图所用浏览器通道 |
 | `COOKIE_SECURE` | 关（`1` 开启） | session cookie 加 Secure 标记 |
+| `COOKIE_SAME_SITE` | `Lax` | `Lax` / `Strict` / `None`；跨站 HTTPS 部署用 `None`，并必须开启 `COOKIE_SECURE=1` |
 | `TRUST_PROXY` | 关（`1` 开启） | 信任反向代理的客户端 IP 头 |
 
 ## API 概览（server/app.mjs）
@@ -49,13 +50,15 @@ npm test         # node --test test/*.test.mjs
 | POST | `/api/auth/register` | 注册并建立会话（限流） |
 | POST | `/api/auth/login` | 登录（限流） |
 | POST | `/api/auth/logout` | 登出 |
-| POST | `/api/drafts?task=&name=` | 上传 ZIP/HTML，检查后暂存为草稿（需登录，限流） |
+| POST | `/api/questions` | 发布社区题目，保留提示词、标签和允许的提交格式（需登录） |
+| POST | `/api/drafts?task=&name=&template=` | 上传 ZIP/HTML，检查后暂存为草稿；`template=static|vite` 可选，Vite 项目必须含构建产物（需登录，限流） |
 | DELETE | `/api/drafts/:id` | 丢弃草稿（需登录） |
 | POST | `/api/works` | 由草稿正式投稿，入审核队列并排队截图（需登录） |
 | DELETE | `/api/works/:task/:id` | 删除投稿（需登录，本人或管理员） |
 | POST | `/api/works/:task/:id/review` | 审核投稿（仅管理员） |
 | POST | `/api/works/:task/:id/reactions` | emoji 反应（需登录） |
-| GET | `/api/me` | 我的投稿与投票（需登录） |
+| GET | `/api/me` | 本人题目、投稿、投票、近 365 天活跃热图和收到的表情（需登录） |
+| PATCH | `/api/me` | 修改昵称，登录用户名不变（需登录） |
 | GET | `/api/review` | 全部投稿与审计日志（仅管理员） |
 | POST | `/api/arena/matches` | 创建一场盲投对战（限流） |
 | POST | `/api/arena/matches/:id/vote` | 对一场对战投票（限流） |
@@ -65,8 +68,10 @@ npm test         # node --test test/*.test.mjs
 
 内容端口（默认 5180）：按 `CONTENT_ORIGIN_TEMPLATE` 的 `{token}` 子域伺服单个作品目录，施加沙盒 CSP 与 CDN 白名单（见 `server/content.mjs`）。
 
+前端独立部署时，`SITE_ORIGINS` 填前端真实 origin（不含路径或末尾 `/`），所有 fetch/XHR 携带会话凭据（`credentials: 'include'` / `withCredentials = true`）。可信来源支持 API 的 OPTIONS 预检及 `Content-Type` 请求头；不使用通配 CORS。`captures` / `cover` 的 `media/...` 路径按后端站点根解析，不能按前端路径解析。跨站 Cookie 还受浏览器第三方 Cookie 设置限制；优先采用同站域名的前端和 API 部署。
+
 ## 测试
 
 ```bash
-npm test    # 11 个用例：排名算法、上传检查、上传→审核→盲投全流程
+npm test    # 19 个用例：排名、上传/审核/盲投、社区题目、昵称/热图、凭据 CORS 与 Cookie
 ```

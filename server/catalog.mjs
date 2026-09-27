@@ -9,7 +9,7 @@ export const modelKey = (work) => work.modelId ?? `x:${work.modelName.normalize(
 // A leaderboard entry: one model at one effort level ("配置"), or the model across efforts.
 export const entityKey = (work, by = 'config') => (by === 'model' ? modelKey(work) : `${modelKey(work)}|${effortKey(work.effort)}`);
 
-export function createCatalog(dist) {
+export function createCatalog(dist, questions = null) {
   const file = join(dist, 'data.json');
   let loadedAt = -1;
   let data = null;
@@ -59,8 +59,9 @@ export function createCatalog(dist) {
     // Changes whenever the build is re-assembled; caches derived from the catalog key on it.
     get version() { return loadedAt; },
     get title() { load(); return data.title; },
-    task(id) { load(); return tasks.get(id) ?? null; },
-    tasks() { load(); return [...tasks.values()]; },
+    task(id) { load(); const question = questions?.get(id); return tasks.get(id) ?? (question ? { ...question, acceptsUploads: true, works: new Map() } : null); },
+    tasks() { load(); return [...tasks.values(), ...(questions?.all() ?? []).map((question) => ({ ...question, acceptsUploads: true, works: new Map() }))]; },
+    tags() { load(); return [...new Set([...data.tasks, ...(questions?.all() ?? [])].flatMap((task) => task.tags ?? []))]; },
     model(id) { load(); return models.get(id) ?? null; },
     models() { load(); return [...models.values()]; },
     work(taskId, id) { load(); return tasks.get(taskId)?.works.get(id) ?? null; },

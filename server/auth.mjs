@@ -11,12 +11,15 @@ export const newId = (bytes = 12) => randomBytes(bytes).toString('hex');
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 export const nameKey = (name) => name.normalize('NFKC').trim().toLowerCase();
 
-export function createAuth(db, { admins, secureCookies, sessionTtl }) {
+export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', sessionTtl }) {
+  if (!['Lax', 'Strict', 'None'].includes(cookieSameSite)) throw new Error('COOKIE_SAME_SITE must be Lax, Strict or None');
+  if (cookieSameSite === 'None' && !secureCookies) throw new Error('COOKIE_SAME_SITE=None requires COOKIE_SECURE=1');
   const q = {
     userByKey: db.prepare('SELECT * FROM users WHERE name_key = ?'),
     userById: db.prepare('SELECT * FROM users WHERE id = ?'),
     insertUser: db.prepare('INSERT INTO users (id, name, name_key, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
     setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
+    setNickname: db.prepare('UPDATE users SET nickname = ? WHERE id = ?'),
     insertSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
     session: db.prepare('SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ?'),
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
@@ -46,7 +49,15 @@ export function createAuth(db, { admins, secureCookies, sessionTtl }) {
   }
 
   return {
-    public: (user) => (user ? { id: user.id, name: user.name, role: user.role } : null),
+    public: (user) => (user ? { id: user.id, name: user.name, nickname: user.nickname || user.name, role: user.role } : null),
+
+    updateProfile(user, body) {
+      if (typeof body.nickname !== 'string') fail(400, '请填写昵称');
+      const nickname = body.nickname.normalize('NFKC').trim();
+      if (!nickname || nickname.length > 24 || /[\u0000-\u001f\u007f]/.test(nickname)) fail(400, '昵称为 1–24 个字，不能包含换行或控制字符');
+      q.setNickname.run(nickname, user.id);
+      return q.userById.get(user.id);
+    },
 
     register(rawName, rawPassword) {
       const name = validName(rawName);
@@ -73,13 +84,13 @@ export function createAuth(db, { admins, secureCookies, sessionTtl }) {
       const now = Date.now();
       q.purgeSessions.run(now);
       q.insertSession.run(sha256(token), userId, now, now + sessionTtl);
-      res.setHeader('Set-Cookie', `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(sessionTtl / 1000)}${secureCookies ? '; Secure' : ''}`);
+      res.setHeader('Set-Cookie', `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=${Math.floor(sessionTtl / 1000)}${secureCookies ? '; Secure' : ''}`);
     },
 
     endSession(req, res) {
       const token = parseCookies(req.headers.cookie)[COOKIE];
       if (token) q.deleteSession.run(sha256(token));
-      res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookies ? '; Secure' : ''}`);
+      res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=0${secureCookies ? '; Secure' : ''}`);
     },
 
     userFrom(req) {

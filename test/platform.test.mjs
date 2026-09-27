@@ -8,8 +8,11 @@ import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { createPlatform } from '../server/app.mjs';
+import { createAuth } from '../server/auth.mjs';
 import { limits as defaultLimits } from '../server/config.mjs';
 import { inspectUpload } from '../server/inspect.mjs';
+import { openDatabase } from '../server/db.mjs';
+import { createQuestions } from '../server/questions.mjs';
 import { fitBradleyTerry, rankEntries } from '../server/ranking.mjs';
 
 function zip(entries) {
@@ -58,6 +61,25 @@ function zip(entries) {
 const PAGE = '<!doctype html><html><head><title>t</title></head><body><canvas></canvas><script src="app.js"></script></body></html>';
 const inspect = (buffer, name = 'work.zip') => inspectUpload(buffer, name, { limits: defaultLimits, cdn: ['unpkg.com'] });
 
+test('cross-site sessions use the configured cookie policy and require HTTPS', () => {
+  const db = openDatabase(':memory:');
+  try {
+    assert.throws(() => createAuth(db, { admins: [], secureCookies: false, cookieSameSite: 'None', sessionTtl: 60000 }), /requires COOKIE_SECURE/);
+    const auth = createAuth(db, { admins: [], secureCookies: true, cookieSameSite: 'None', sessionTtl: 60000 });
+    const user = auth.register('cookie-user', 'correct horse');
+    const headers = new Map();
+    const res = { setHeader: (name, value) => headers.set(name, value) };
+    auth.startSession(res, user.id);
+    const cookie = headers.get('Set-Cookie');
+    assert.match(cookie, /HttpOnly; SameSite=None; Max-Age=60; Secure$/);
+    const req = { headers: { cookie: cookie.split(';')[0] } };
+    assert.equal(auth.userFrom(req).id, user.id);
+    auth.endSession(req, res);
+    assert.match(headers.get('Set-Cookie'), /SameSite=None; Max-Age=0; Secure$/);
+    assert.equal(auth.userFrom(req), null);
+  } finally { db.close(); }
+});
+
 describe('ranking', () => {
   const work = (key) => ({ key, taskId: 't' });
   const keyOf = (w) => w.key;
@@ -104,6 +126,15 @@ describe('upload inspection', () => {
     ]));
     assert.equal(result.root, 'dist');
     assert.equal(result.entry, 'index.html');
+  });
+
+  test('a built project prefers dist over its source index when the format is inferred', () => {
+    const result = inspect(zip([
+      { name: 'package.json', data: '{}' },
+      { name: 'index.html', data: '<html><script src="/src/main.js"></script></html>' },
+      { name: 'dist/index.html', data: '<html><h1>Built page</h1></html>' },
+    ]));
+    assert.equal(result.root, 'dist');
   });
 
   test('unsafe or incomplete archives are refused with a reason', () => {
@@ -167,7 +198,7 @@ describe('platform lifecycle', () => {
       title: 'test',
       models: [{ id: 'm-a', name: 'Model A', vendor: 'VA' }, { id: 'm-b', name: 'Model B', vendor: 'VB' }],
       tasks: [
-        { id: 'one', title: 'One', promptPending: false, results: results.map(([id, model, effort]) => ({ id, model, effort, title: id.toUpperCase(), summary: '', scene: `results/one/${id}/`, captures: {}, gallery: [] })) },
+        { id: 'one', title: 'One', tags: ['Three.js'], promptPending: false, results: results.map(([id, model, effort]) => ({ id, model, effort, title: id.toUpperCase(), summary: '', scene: `results/one/${id}/`, captures: {}, gallery: [] })) },
         { id: 'closed', title: 'Closed', promptPending: true, results: [] },
       ],
     }));
@@ -186,6 +217,38 @@ describe('platform lifecycle', () => {
     content.close();
     await platform.close();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test('trusted frontends can preflight, sign in and read sessions while foreign writes are refused', async () => {
+    const origin = 'http://127.0.0.1';
+    const preflight = await fetch(`${base}/api/auth/login`, {
+      method: 'OPTIONS', headers: { origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+    assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+    assert.equal(preflight.headers.get('access-control-allow-methods'), 'POST');
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'alice', password: 'correct horse' }),
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.headers.get('access-control-allow-origin'), origin);
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const boot = await fetch(`${base}/api/bootstrap`, { headers: { origin, cookie } });
+    assert.equal((await boot.json()).user.name, 'alice');
+    assert.equal(boot.headers.get('vary'), 'Origin');
+    const unauthorized = await fetch(`${base}/api/me`, { headers: { origin } });
+    assert.equal(unauthorized.status, 401);
+    assert.equal(unauthorized.headers.get('access-control-allow-origin'), origin);
+    const data = await fetch(`${base}/data.json`, { headers: { origin } });
+    assert.equal(data.status, 200);
+    assert.equal(data.headers.get('access-control-allow-origin'), origin);
+    for (const foreign of ['https://evil.example', base.replace('http:', 'https:')]) {
+      const rejected = await fetch(`${base}/api/me`, { method: 'PATCH', headers: { origin: foreign, cookie, 'Content-Type': 'application/json' }, body: '{"nickname":"foreign"}' });
+      assert.equal(rejected.status, 403);
+      assert.equal(rejected.headers.get('access-control-allow-origin'), null);
+    }
+    assert.equal((await fetch(`${base}/api/me`, { method: 'OPTIONS', headers: { origin: 'https://evil.example', 'Access-Control-Request-Method': 'PATCH' } })).status, 403);
   });
 
   let upload;
@@ -218,7 +281,10 @@ describe('platform lifecycle', () => {
     assert.equal(match.status, 200);
     assert.deepEqual(Object.keys(match.data).sort(), ['a', 'b', 'counted', 'id', 'task']);
     for (const url of [match.data.a, match.data.b]) assert.match(new URL(url).hostname, /^m[0-9a-f]{32}\.localhost$/);
-    assert.equal((await fetchContent(match.data.a)).status, 200);
+    const frame = await fetchContent(match.data.a);
+    assert.equal(frame.status, 200);
+    assert.match(frame.text, /<script src="\/__sp_fold\.js"><\/script>/);
+    assert.equal((await fetchContent(new URL('/__sp_fold.js', match.data.a).href)).status, 200);
     const vote = await call('alice', 'POST', `/api/arena/matches/${match.data.id}/vote`, { choice: 'a' });
     assert.equal(vote.data.counted, true);
     assert.ok(['A1', 'B1'].includes(vote.data.a.title));
@@ -254,5 +320,123 @@ describe('platform lifecycle', () => {
     assert.equal((await call('alice', 'DELETE', `/api/works/one/${upload.id}`)).status, 200);
     assert.equal((await fetchContent(upload.scene)).status, 410);
     assert.equal((await call('root', 'DELETE', '/api/works/one/a1')).status, 409, 'curated works are managed in the repository');
+  });
+
+  test('publishing requires a session and complete question details', async () => {
+    const body = { title: 'Keyboard', summary: 'Test product interaction', prompt: 'Build a keyboard.', tags: ['Three.js'], templates: ['static'] };
+    assert.equal((await call('guest', 'POST', '/api/questions', body)).status, 401);
+    assert.equal((await call('bob', 'POST', '/api/questions', body, { origin: false })).status, 403);
+    for (const invalid of [{ title: ' ' }, { summary: '' }, { prompt: '' }, { tags: [] }, { tags: ['bad,tag'] }, { tags: Array.from({ length: 7 }, (_, i) => `tag${i}`) }, { templates: [] }, { templates: ['server'] }]) {
+      assert.equal((await call('bob', 'POST', '/api/questions', { ...body, ...invalid })).status, 400);
+    }
+  });
+
+  test('a published question persists, joins the catalogue and binds uploads to itself', async () => {
+    const created = await call('bob', 'POST', '/api/questions', {
+      title: 'Dense question grid', summary: 'Compare responsive layouts.', prompt: 'Build a page.\nKeep this exact prompt.',
+      tags: [' #three.js ', 'Three.js', '界面'], templates: ['static'], owner: 'root',
+    });
+    assert.equal(created.status, 200);
+    const question = created.data.question;
+    assert.deepEqual(question.tags, ['Three.js', '界面']);
+    assert.equal(question.owner, 'bob');
+    assert.equal(question.version, 1);
+    const boot = (await call('guest', 'GET', '/api/bootstrap')).data;
+    assert.equal(boot.questions.find((q) => q.id === question.id).prompt, question.prompt);
+    assert.equal(boot.arena[question.id].uploads, true);
+    assert.equal((await call('guest', 'GET', `/api/leaderboard?task=${question.id}`)).status, 200);
+    const reopened = openDatabase(join(root, 'data', 'platform.db'));
+    try { assert.deepEqual(createQuestions(reopened).get(question.id), question); } finally { reopened.close(); }
+
+    const html = '<!doctype html><title>New question answer</title><h1>Answer</h1>';
+    assert.equal((await call('bob', 'POST', `/api/drafts?task=${question.id}&template=vite&name=answer.html`, html, { raw: true })).status, 400);
+    const staged = await call('bob', 'POST', `/api/drafts?task=${question.id}&template=static&name=answer.html`, html, { raw: true });
+    assert.equal(staged.status, 200);
+    assert.equal(staged.data.draft.task, question.id);
+    const submitted = await call('bob', 'POST', '/api/works', { draftId: staged.data.draft.id, task: 'one', confirmed: true, title: 'Answer', modelId: 'm-a', effort: 'High', tool: 'CLI' });
+    assert.equal(submitted.status, 200);
+    assert.equal(submitted.data.work.task, question.id, 'the draft owns the task; request metadata cannot move it');
+    assert.equal((await fetchContent(submitted.data.work.scene)).status, 200);
+    assert.equal((await call('guest', 'GET', '/api/me')).status, 401);
+    const mine = (await call('bob', 'GET', '/api/me')).data;
+    assert.deepEqual(mine.questions.map((q) => q.id), [question.id]);
+    assert.ok(mine.works.some((work) => work.id === submitted.data.work.id));
+    assert.ok(!(await call('alice', 'GET', '/api/me')).data.questions.some((q) => q.id === question.id), 'another account cannot see the question in its own submissions');
+  });
+
+  test('Vite-only questions require a built project and serve its dist entry', async () => {
+    const created = await call('alice', 'POST', '/api/questions', { title: 'Vite', summary: 'Built browser page', prompt: 'Build it.', tags: ['Vite'], templates: ['vite'] });
+    const id = created.data.question.id;
+    assert.deepEqual((await call('alice', 'GET', '/api/me')).data.questions.map((q) => q.id), [id]);
+    assert.ok(!(await call('bob', 'GET', '/api/me')).data.questions.some((q) => q.id === id));
+    assert.equal((await call('alice', 'POST', `/api/drafts?task=${id}&name=answer.html`, '<html>hi</html>', { raw: true })).status, 400);
+    const archive = zip([
+      { name: 'package.json', data: '{}' },
+      { name: 'index.html', data: '<html><script type="module" src="/src/main.js"></script></html>' },
+      { name: 'dist/index.html', data: '<html><h1>Built answer</h1></html>' },
+    ]);
+    const staged = await call('alice', 'POST', `/api/drafts?task=${id}&template=vite&name=answer.zip`, archive, { raw: true });
+    assert.equal(staged.status, 200);
+    assert.equal(staged.data.draft.root, 'dist');
+    assert.match((await fetchContent(staged.data.draft.preview)).text, /Built answer/);
+  });
+
+  test('a nickname is private to its account, persists and leaves the login name unchanged', async () => {
+    assert.equal((await call('guest', 'PATCH', '/api/me', { nickname: '访客' })).status, 401);
+    assert.equal((await call('alice', 'PATCH', '/api/me', { nickname: '新昵称' }, { origin: false })).status, 403);
+    for (const nickname of ['', '   ', 'x'.repeat(25), 'a\nb', null]) {
+      assert.equal((await call('alice', 'PATCH', '/api/me', { nickname })).status, 400);
+    }
+    const changed = await call('alice', 'PATCH', '/api/me', { nickname: '  河畔观测员  ', name: 'root', role: 'admin' });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.data.user.name, 'alice');
+    assert.equal(changed.data.user.nickname, '河畔观测员');
+    assert.equal(changed.data.user.role, 'member');
+    const boot = (await call('alice', 'GET', '/api/bootstrap')).data;
+    assert.equal(boot.user.nickname, '河畔观测员');
+    assert.ok(boot.questions.some((question) => question.owner === '河畔观测员'));
+    assert.equal((await call('bob', 'GET', '/api/bootstrap')).data.user.nickname, 'bob');
+    const reopened = openDatabase(join(root, 'data', 'platform.db'));
+    try { assert.equal(reopened.prepare('SELECT nickname FROM users WHERE name = ?').get('alice').nickname, '河畔观测员'); } finally { reopened.close(); }
+    const login = await call('alice-again', 'POST', '/api/auth/login', { name: 'alice', password: 'correct horse' });
+    assert.equal(login.status, 200);
+    assert.equal(login.data.user.nickname, '河畔观测员');
+  });
+
+  test('personal activity counts participation while received reactions exclude self and deleted works', async () => {
+    assert.equal((await call('charlie', 'POST', '/api/auth/register', { name: 'charlie', password: 'correct horse' })).status, 200);
+    const empty = (await call('charlie', 'GET', '/api/me')).data;
+    assert.equal(empty.activity.total, 0);
+    assert.equal(empty.activity.activeDays, 0);
+    assert.equal(empty.receivedReactions.total, 0);
+
+    const created = await call('charlie', 'POST', '/api/questions', { title: 'Profile test', summary: 'A profile fixture', prompt: 'Make a page.', tags: ['UI'], templates: ['static'] });
+    const task = created.data.question.id;
+    const staged = await call('charlie', 'POST', `/api/drafts?task=${task}&name=answer.html`, '<!doctype html><title>Answer</title><h1>Answer</h1>', { raw: true });
+    const submitted = await call('charlie', 'POST', '/api/works', { draftId: staged.data.draft.id, confirmed: true, title: 'Answer', modelId: 'm-a', tool: 'CLI' });
+    assert.equal(submitted.status, 200);
+    const workPath = `/api/works/${task}/${submitted.data.work.id}`;
+    const match = await call('charlie', 'POST', '/api/arena/matches', { task: 'one' });
+    assert.equal((await call('charlie', 'POST', `/api/arena/matches/${match.data.id}/vote`, { choice: 'tie' })).status, 200);
+    assert.equal((await call('charlie', 'POST', '/api/works/one/a1/reactions', { emoji: '👍' })).status, 200);
+    assert.equal((await call('charlie', 'POST', `${workPath}/reactions`, { emoji: '🔥' })).status, 200);
+    assert.equal((await call('bob', 'POST', `${workPath}/reactions`, { emoji: '🔥' })).status, 200);
+    assert.equal((await call('alice', 'POST', `${workPath}/reactions`, { emoji: '❤️' })).status, 200);
+    const mine = (await call('charlie', 'GET', '/api/me')).data;
+    assert.equal(mine.activity.total, 5);
+    assert.equal(mine.activity.activeDays, 1);
+    assert.equal(mine.activity.days[0].date, mine.activity.to);
+    assert.equal((Date.parse(mine.activity.to) - Date.parse(mine.activity.from)) / 86400000, 364);
+    assert.deepEqual(mine.receivedReactions, { counts: { '❤️': 1, '🔥': 1 }, total: 2 });
+    assert.equal((await call('bob', 'GET', '/api/me')).data.receivedReactions.total, 0);
+    await call('bob', 'POST', `${workPath}/reactions`, { emoji: '🔥' });
+    assert.equal((await call('charlie', 'GET', '/api/me')).data.receivedReactions.total, 1);
+
+    platform.db.prepare('UPDATE questions SET created_at = ? WHERE id = ?').run(Date.now() - 366 * 86400000, task);
+    assert.equal((await call('charlie', 'GET', '/api/me')).data.activity.total, 4, 'older participation is outside the rolling year');
+    assert.equal((await call('charlie', 'DELETE', workPath)).status, 200);
+    const deleted = (await call('charlie', 'GET', '/api/me')).data;
+    assert.equal(deleted.receivedReactions.total, 0);
+    assert.equal(deleted.activity.total, 4, 'past submissions remain part of personal activity');
   });
 });

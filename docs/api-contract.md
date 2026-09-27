@@ -35,7 +35,7 @@
 - 认证基于 **Cookie 会话**。注册 / 登录成功后，响应头种下：
   `Set-Cookie: sp_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`（30 天；`COOKIE_SECURE=1` 时追加 `Secure`）。
 - Cookie 名为 `sp_session`，HttpOnly，前端脚本不可读；服务端只存其 SHA-256。
-- 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'same-origin'`；跨域部署时见 1.5 的待拍板项）。
+- 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'include'`，XHR 使用 `withCredentials = true`）。`COOKIE_SAME_SITE` 支持 `Lax`（默认）、`Strict`、`None`；跨站 HTTPS 部署设 `None` 并开启 `COOKIE_SECURE=1`，否则服务拒绝启动。第三方 Cookie 仍受浏览器设置限制，建议前端与 API 使用同站域名。
 - 登出（`POST /api/auth/logout`）删除服务端会话并下发 `Max-Age=0` 的清空 Cookie。
 - 角色：`member`（默认）与 `admin`。用户名被列入服务端 `ADMIN_USERNAMES` 环境变量的账号在注册 / 登录时自动持有 `admin` 角色；运营亦可经 `npm run admin -- <用户名>` 提升。
 
@@ -50,14 +50,15 @@
 - `error` 恒存在，面向最终用户，可直接展示。
 - `code` 仅在少数业务错误上出现，目前仅有两个取值，均出自创建对战：`"insufficient"`（对战池不足）与 `"exhausted"`（该用户已评完全部组合）。前端逻辑判断请用 `code`，不要匹配 `error` 文案。
 - HTTP 状态码全集：`400`（参数无效）、`401`（未登录 / 凭证错误）、`403`（无权限 / 来源无效）、`404`（不存在）、`405`（方法不允许）、`409`（状态冲突）、`413`（体积超限）、`415`（Content-Type 非 JSON）、`429`（限流 / 待审超限）、`500`（服务端错误，固定文案「服务器出错了，请稍后再试」）。
-- 非 GET/HEAD 的 `/api/*` 请求必须带有与站点同源的 `Origin` 头（`assertSameOrigin`，Origin 的 host 须与请求 Host 一致），否则一律 `403 请求来源无效`。浏览器跨域 fetch 天然带 Origin，因此跨站前端在当前代码下**所有写操作都会 403**（见 1.5 待拍板）。
+- 非 GET/HEAD 的 `/api/*` 请求必须带有可信 `Origin`：请求自身的完整 origin 或 `SITE_ORIGINS` 白名单中的完整 origin（精确协议、主机与端口），否则 `403 请求来源无效`。同源判断只在 `TRUST_PROXY=1` 时使用代理传入的 HTTPS 协议。
 - JSON 请求体默认上限 64 KB；`POST /api/works` 单独放宽至 6 MB（封面以 data URL 内嵌所致）。
 
 ### 1.5 跨域约定（CORS）
 
-- **现状：服务端不下发任何 `Access-Control-Allow-*` 头**。两个前端若与本服务同域（或经反向代理同域）部署，无任何问题；不同域部署时浏览器会拦截全部响应。
-- 同源校验（1.4）与 CORS 是两道独立防线：即便将来放开 CORS，`Origin` 校验仍决定写操作是否被接受。
-- **计划（待拍板）**：仅对公开 GET 端点（`/api/bootstrap`、`/api/leaderboard`、数据包静态文件等）开放跨域读取；写端点是否放行跨域、以及随之需要的 `SameSite=None; Secure` Cookie 改造，需双方另行拍板。
+- `SITE_ORIGINS` 同时控制可信前端的凭据 CORS、写请求与作品 `frame-ancestors`；填写不含路径或末尾 `/` 的 origin，以逗号分隔。不反射任意来源，不使用 `*`。
+- 可信来源的 API、媒体与数据包静态响应下发 `Access-Control-Allow-Origin: <origin>`、`Access-Control-Allow-Credentials: true` 与 `Vary: Origin`，包括 API 错误响应。
+- `/api/*` 的 OPTIONS 预检按请求方法匹配已有路由，成功返回 `204`；允许 `Content-Type`，缓存 600 秒。未知端点返回 `404`，不支持的方法返回 `405`，外部来源或其它请求头返回 `403`。
+- 非可信来源的读响应不下发许可头；非可信来源的 API 写请求和预检被拒绝。无 Origin 的读请求仍可供服务端与 CLI 使用。
 
 ### 1.6 限流一览
 
@@ -138,7 +139,7 @@
 
 ### 2.2 任务 / 题目（task）
 
-题目由数据包定义，不落库。字段见第 4 节。平台层关心的两个派生属性：
+馆藏题目由数据包定义；社区题目经 `POST /api/questions` 写入 SQLite，加入同一个投稿与盲评目录。字段见第 4 节与 3.14。平台层关心的两个派生属性：
 
 - `id` / `title`：标识与标题。
 - `acceptsUploads`：`promptPending` 为真时置假——提示词原文尚未公开的题目**不接受上传**（`POST /api/drafts` 返回 `409`）。
@@ -154,10 +155,10 @@
 HTTP 公开视图恒为：
 
 ```json
-{ "id": "…", "name": "…", "role": "member" }
+{ "id": "…", "name": "…", "nickname": "…", "role": "member" }
 ```
 
-未登录时用户字段为 `null`。用户名规则：NFKC 规范化后 2–24 位文字（Unicode 字母）、数字、下划线或连字符；密码 8–128 位。
+未登录时用户字段为 `null`。`nickname` 默认返回登录用户名，可经 `PATCH /api/me` 修改；数据库增加 `nickname` 列，`name` 仍为登录用户名。用户名规则：NFKC 规范化后 2–24 位文字（Unicode 字母）、数字、下划线或连字符；密码 8–128 位。
 
 ### 2.5 对局（match）
 
@@ -208,6 +209,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
     "limits": { "uploadBytes": 31457280, "coverBytes": 3145728, "pendingPerUser": 5, "provisionalGames": 30 }
   },
   "works": [ /* 全部未删除投稿的公开视图，按创建时间倒序 */ ],
+  "questions": [ /* 社区题目公开视图，见 3.14 */ ],
   "reactions": {
     "counts": { "task-id/work-id": { "🔥": 3 } },
     "mine": { "task-id/work-id": ["🔥"] }
@@ -254,7 +256,9 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 草稿是「上传 → 检查 → 试加载 → 确认提交」流水线的中间态，有效期 24 小时。
 
-**`POST /api/drafts?task=<题目id>&name=<文件名>`**
+**`POST /api/drafts?task=<题目id>&name=<文件名>&template=<static|vite>`**
+
+`template` 可选，必须为该社区题目允许的格式；省略时从上传内容推断。Vite 项目必须含已构建的 `dist/index.html` 或其它识别的构建入口，存在源 `index.html` 时仍优先伺服构建目录；服务端不运行上传项目的构建脚本。
 
 **认证**：登录。**限流**：drafts 桶（12 次/10 分钟/用户）。**请求体**：原始 ZIP 或单个 HTML 文件的二进制（**非 JSON**），上限 30 MB。
 
@@ -356,13 +360,25 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 错误：`401`；`404 作品不存在`；`409 存疑作品仅供参考，不能再互动`；`400 不支持这个表情`（表情须在 `bootstrap.site.emojis` 白名单内）。馆藏作品同样可互动。
 
-**`GET /api/me`** —— 我的投稿与票数
+**`GET /api/me`** —— 本人题目、投稿与参与统计
 
 **认证**：登录。响应：
 
 ```json
-{ "works": [ <本人投稿公开视图，含特权字段> ], "votes": 12 }
+{
+  "questions": [ <本人社区题目公开视图> ],
+  "works": [ <本人投稿公开视图，含特权字段> ], "votes": 12,
+  "joinedAt": "…ISO…",
+  "activity": { "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "days": [ { "date": "YYYY-MM-DD", "count": 2 } ], "total": 12, "activeDays": 5 },
+  "receivedReactions": { "counts": { "🔥": 2 }, "total": 2 }
+}
 ```
+
+活跃统计按 UTC+8 的近 365 天汇总本人发布题目、投稿、有效落库投票和当前表情记录；历史投稿删除后仍计入活跃。收到的表情仅统计本人当前未删除投稿且排除自评。
+
+**`PATCH /api/me`** —— 更新昵称
+
+认证：登录；限流：write 桶。请求 `{ "nickname": "河畔观测员" }`，响应 `{ "user": <用户公开视图> }`。昵称经 NFKC 与首尾去空白后为 1–24 字，不能含控制字符；无效返回 `400`。不能更改登录用户名或角色。题目与作品作者公开显示昵称。
 
 **`GET /api/review`** —— 审核台（仅管理员）
 
@@ -474,6 +490,12 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 ### 3.13 站点静态文件
 
 `GET /*`（非 `/api/`、非 `/media/`）伺服 `DIST_DIR` 内文件：目录映射 `index.html`，不存在返回纯文本 `404 Not found`。`index.html` 附加站点 CSP 与 `Referrer-Policy: same-origin`。本仓库定位下 dist 通常只放数据包，画廊前端由此直接读取 `data.json` 与馆藏作品目录（见第 4 节）。
+
+### 3.14 `POST /api/questions` —— 发布社区题目
+
+认证：登录；限流：write 桶。请求体 `{ "title": "…", "summary": "…", "prompt": "…", "tags": ["UI"], "templates": ["static", "vite"] }`。标题、测试简述、完整提示词必填，最多 70 / 400 / 20000 字；提示词除首尾空白外保留原文。标签 1–6 个，每个 1–24 字，按 NFKC 与大小写归一去重，已有标签沿用其名称。格式至少选一种 `static` / `vite`，省略时默认两种。
+
+成功 `200`：`{ "question": { "id": "q-<16hex>", "title": "…", "summary": "…", "prompt": "…", "tags": ["UI"], "templates": ["static", "vite"], "owner": "作者昵称", "version": 1, "community": true, "createdAt": "…ISO…", "date": "YYYY-MM-DD" } }`。作者从会话读取，不能由客户端指定。错误：`401` / `400` / `429`。社区题目通过 `bootstrap.questions` 公开、通过 `me.questions` 返回本人题目，立即接受关联投稿；其 `arena` 初始为空池。
 
 ---
 
