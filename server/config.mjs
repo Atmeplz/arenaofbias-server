@@ -1,0 +1,53 @@
+// Platform configuration. Every value can be overridden with an environment variable;
+// the defaults suit a single machine running `npm start` after `npm run build`.
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const env = process.env;
+const int = (value, fallback) => (/^\d+$/.test(value ?? '') ? Number(value) : fallback);
+const list = (value, fallback) => (value ?? fallback).split(',').map((item) => item.trim()).filter(Boolean);
+
+const port = int(env.PORT, 5173);
+const contentPort = int(env.CONTENT_PORT, 5180);
+
+export const config = {
+  host: env.HOST || '127.0.0.1',
+  port,
+  contentPort,
+  dist: resolve(env.DIST_DIR || join(ROOT, 'dist')),
+  dataDir: resolve(env.DATA_DIR || join(ROOT, '.data')),
+  // Every work is served from its own origin: {token} must fill a whole host label.
+  // Locally *.localhost resolves to this machine; production needs a wildcard domain
+  // on a registrable domain separate from the site (see docs/ARCHITECTURE.md).
+  contentTemplate: env.CONTENT_ORIGIN_TEMPLATE || `http://{token}.localhost:${contentPort}`,
+  // Origins allowed to frame works (the site itself).
+  siteOrigins: list(env.SITE_ORIGINS, `http://localhost:${port},http://127.0.0.1:${port}`),
+  // Usernames that always hold the admin role; `npm run admin -- <name>` also promotes.
+  admins: list(env.ADMIN_USERNAMES, '').map((name) => name.normalize('NFKC').toLowerCase()),
+  // Public CDNs a work may load scripts, styles, fonts and data from. Everything else is blocked.
+  cdn: list(env.CONTENT_CDN_ALLOWLIST, 'cdn.jsdelivr.net,unpkg.com,cdnjs.cloudflare.com,esm.sh,fonts.googleapis.com,fonts.gstatic.com'),
+  // Headless screenshots of submitted works (Playwright + a local Chrome); off with CAPTURE=0.
+  capture: env.CAPTURE !== '0',
+  captureChannel: env.CAPTURE_BROWSER ?? 'chrome',
+  secureCookies: env.COOKIE_SECURE === '1',
+  trustProxy: env.TRUST_PROXY === '1',
+};
+
+export const limits = {
+  uploadBytes: 30 * 1024 * 1024,
+  unpackedBytes: 150 * 1024 * 1024,
+  fileBytes: 50 * 1024 * 1024,
+  files: 2000,
+  coverBytes: 3 * 1024 * 1024,
+  pendingPerUser: 5,
+  draftsPerUser: 3,
+  draftTtl: 24 * 3600e3,
+  matchTtl: 3 * 3600e3,
+  sessionTtl: 30 * 24 * 3600e3,
+  provisionalGames: 30,
+};
+
+// Effort levels offered on the upload form; curated works keep their own labels.
+export const EFFORTS = ['Low', 'Medium', 'High', 'XHigh', 'Max'];
+export const EMOJIS = ['👍', '❤️', '🔥', '🤯', '👏', '👀'];
