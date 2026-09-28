@@ -1,5 +1,5 @@
 // One-time Show1 import. The source database is always opened read-only.
-// Run --dry-run first; --apply requires a v7 target.
+// Run --dry-run first; --apply requires a v7 (or later, e.g. post-compat v8) target.
 import { createHash, randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
@@ -172,7 +172,7 @@ function makeReport(source, target, options) {
 
 function planMigration(source, target, options) {
   const report = makeReport(source, target, options);
-  if (report.targetVersion !== 7) throw new Error(`目标库 user_version=${report.targetVersion}，需要含隐藏待审字段的 v7`);
+  if (report.targetVersion < 7) throw new Error(`目标库 user_version=${report.targetVersion}，需要含隐藏待审字段的 v7 或更新`);
   // Placeholder matches are derived from source votes one-to-one; keep a sibling counter.
   const tables = {};
   for (const [name, counts] of Object.entries(report.tables)) {

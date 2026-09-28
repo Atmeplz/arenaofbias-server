@@ -1,5 +1,6 @@
 // Wires the platform together: the site (static build + API) and the content handler.
 import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createArena } from './arena.mjs';
 import { createAuth } from './auth.mjs';
@@ -15,6 +16,8 @@ import {
 import { createLibrary } from './library.mjs';
 import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
+import { registerShow1Compat } from './show1compat.mjs';
+import { registerShow1Guess } from './show1/guess.mjs';
 
 export function createPlatform({ config, limits }) {
   const serverVersion = process.env.SERVER_VERSION || (() => {
@@ -99,20 +102,26 @@ export function createPlatform({ config, limits }) {
     reactions: library.reactionSummary(ctx.user, 'show1'),
   }));
 
+  // Dual shape: the Show1 frontend posts `username` (alias of `name`) and reads
+  // `username`/`email` back; the platform fields stay exactly as they were.
+  const compatUser = (user) => ({ ...auth.public(user), username: user.name, email: null });
   router.on('POST', '/api/auth/register', async (ctx) => {
     limit.auth(ctx.ip);
     const body = await readJson(ctx.req);
-    const user = auth.register(body.name, body.password);
+    const user = auth.register(body.name ?? body.username, body.password);
     auth.startSession(ctx.res, user.id);
-    return { user: auth.public(user) };
+    return { user: compatUser(user) };
   });
   router.on('POST', '/api/auth/login', async (ctx) => {
     limit.auth(ctx.ip);
     const body = await readJson(ctx.req);
-    const user = auth.login(body.name, body.password);
+    const user = auth.login(body.name ?? body.username, body.password);
     auth.startSession(ctx.res, user.id);
-    return { user: auth.public(user) };
+    return { user: compatUser(user) };
   });
+  router.on('GET', '/api/auth/me', (ctx) => ({
+    user: ctx.user ? { id: ctx.user.id, username: ctx.user.name, role: ctx.user.role === 'admin' ? 'admin' : null, email: null } : null,
+  }));
   router.on('POST', '/api/auth/logout', (ctx) => {
     auth.endSession(ctx.req, ctx.res);
     return { ok: true };
@@ -236,6 +245,11 @@ export function createPlatform({ config, limits }) {
     if (task && !catalog.task(task)) fail(404, '题目不存在');
     return arena.leaderboard({ task, by: ctx.url.searchParams.get('by') === 'model' ? 'model' : 'config' });
   });
+
+  // Show1 娱乐面兼容层（fusion/show1-adapter/DESIGN.md）：快照 + live 合并的同形状端点。
+  const show1Snapshot = JSON.parse(readFileSync(new URL('./show1/compat-data.json', import.meta.url), 'utf8'));
+  registerShow1Compat(router, { db, snapshot: show1Snapshot, config, limit });
+  registerShow1Guess(router, { db, limit });
 
   function serveSite(req, res, pathname) {
     const media = /^\/media\/(up-[a-z0-9]{8})\/(cover\.(?:png|jpg|webp)|first\.jpg|mobile\.jpg)$/.exec(pathname);

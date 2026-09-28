@@ -94,13 +94,14 @@ test('v6 migrates legacy password hashes on first successful login', () => {
     CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users (id),
       created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE works (id TEXT PRIMARY KEY, status TEXT NOT NULL, task_id TEXT NOT NULL, deleted_at INTEGER);
+    CREATE TABLE votes (id TEXT PRIMARY KEY, identity_source TEXT NOT NULL DEFAULT 'legacy');
     PRAGMA user_version = 5;`);
   legacy.prepare('INSERT INTO users (id, name, name_key, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run('legacy-user', 'olduser', 'olduser', 'member', salt, oldHash, Date.now());
   legacy.close();
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'comments'").get());
     const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
     db.prepare('UPDATE users SET hash_params = ? WHERE id = ?').run(JSON.stringify({ N: 32768, r: 8, p: 1, keylen: 64 }), 'legacy-user');
@@ -129,6 +130,7 @@ test('malformed legacy hash_params are treated as a wrong password, never a 500'
     CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users (id),
       created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE works (id TEXT PRIMARY KEY, status TEXT NOT NULL, task_id TEXT NOT NULL, deleted_at INTEGER);
+    CREATE TABLE votes (id TEXT PRIMARY KEY, identity_source TEXT NOT NULL DEFAULT 'legacy');
     PRAGMA user_version = 5;`);
   setup.close();
   const db = openDatabase(file);

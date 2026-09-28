@@ -162,7 +162,8 @@ test('an old database migrates votes as legacy without inventing identity snapsh
     assert.equal(vote.identity_source, 'legacy');
     assert.equal(vote.a_identity, null);
     assert.equal(vote.a_correction, null);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.equal(vote.source, 'legacy', 'pre-v8 votes stay out of Bradley–Terry');
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

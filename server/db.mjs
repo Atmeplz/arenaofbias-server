@@ -151,7 +151,37 @@ const MIGRATIONS = [
   `ALTER TABLE works ADD COLUMN audience TEXT NOT NULL DEFAULT 'show2'
      CHECK (audience IN ('hidden', 'show1', 'show2', 'both'));
    CREATE INDEX works_audience ON works (audience, status, task_id) WHERE deleted_at IS NULL;`,
+  // Show1 compatibility (fusion/show1-adapter/DESIGN.md): votes carry a write origin
+  // ('arena' = platform blind matches, 'legacy' = pre-v8 rows incl. migrated Show1 votes,
+  // 'show1' = new compat-layer votes) so Bradley–Terry only scores arena votes; compat
+  // votes remember their old mode. Comments gain the Show1 side the commenter backed.
+  // page_views and guess_results serve the compat track and guess endpoints.
+  `ALTER TABLE votes ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy';
+   UPDATE votes SET source = 'arena' WHERE identity_source = 'snapshot';
+   ALTER TABLE votes ADD COLUMN compat_mode TEXT;
+   ALTER TABLE comments ADD COLUMN side TEXT;
+   CREATE TABLE page_views (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     day TEXT,
+     path TEXT,
+     ip_hash TEXT,
+     created_at INTEGER
+   );
+   CREATE TABLE guess_results (
+     id TEXT PRIMARY KEY,
+     day_key TEXT,
+     difficulty INTEGER,
+     answer_id TEXT,
+     won INTEGER,
+     attempts INTEGER,
+     ip_hash TEXT,
+     user_id TEXT,
+     created_at INTEGER
+   );`,
 ];
+
+// Exported so tests can build databases at an intermediate schema version.
+export { MIGRATIONS };
 
 export function openDatabase(file) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
