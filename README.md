@@ -4,7 +4,7 @@ Show1×Show2 融合工程的**共享后端**：整个体系中唯一的动态服
 
 - 纯 Node.js（>= 22.13），**零依赖**（无 dependencies / devDependencies，无需 `npm install`）。
 - 数据库为 `DATA_DIR/platform.db`（默认 `.data/platform.db`），首次启动自动创建，不进 git。
-- 同时监听两个端口：站点/API 端口（默认 5173）与作品沙盒内容端口（默认 5180，每个作品以独立子域 origin 伺服，互相隔离）。
+- 同时监听两个端口：API/数据包端口（代码默认 5173）与作品沙盒内容端口（代码默认 5180，每个作品以独立子域 origin 伺服，互相隔离）。实际画廊联调分别使用 5190、5191，前端位于 4175。
 
 ## 运行
 
@@ -14,10 +14,24 @@ npm run admin -- <用户名>   # 提升某用户为管理员（server/cli.mjs）
 npm test         # node --test test/*.test.mjs
 ```
 
-启动前需要**已构建好的数据包**（内含 `data.json` 与 curated 作品目录），通过 `DIST_DIR` 指向，默认 `./dist`：
+启动前需要**已构建好的数据包**（内含 `data.json` 与馆藏作品目录），通过 `DIST_DIR` 指向，代码默认 `./dist`。本后端仓库当前**没有** `dist/`，仅运行 `npm start` 会因缺少数据包而失败：
 
-- 生产环境：数据包来自 **arenaofbias-data** 仓库的构建产物，部署到本服务后由 `DIST_DIR` 指向。
-- 本地开发：本仓库根目录的 `dist/`（已 gitignore）即为一份本地数据包，可直接 `npm start`。
+- `same-prompt-gallery` 负责静态画廊前端与原作展示；`arenaofbias-server` 独占 API、账号/投票/投稿数据库和投稿沙盒；`arenaofbias-data` 负责生成供后端读取的馆藏数据包。后端不复制前端源码，也不提供画廊入口页面。
+- 本地与生产均需先取得数据仓库构建产物，将 `DIST_DIR` 指向它的根目录。若前端与后端各自持有数据包副本，部署时应确保两者版本一致。
+
+例如本轮本机联调（PowerShell；先将首行替换为实际已构建数据包的绝对路径）：
+
+```powershell
+$env:DIST_DIR = 'C:\path\to\built-datapack'
+$env:DATA_DIR = 'C:\path\to\isolated-runtime-data'
+$env:PORT = '5190'
+$env:CONTENT_PORT = '5191'
+$env:SITE_ORIGINS = 'http://localhost:4175'
+$env:CAPTURE = '0'
+npm start
+```
+
+前端独立启动，并将画廊的 `API_BASE_URL` 设置为 `http://localhost:5190/api/`（包含 `/api/`）；`CAPTURE=0` 只用于不验自动截图的本地联调。`CONTENT_ORIGIN_TEMPLATE` 默认随 `CONTENT_PORT` 生成 `http://{token}.localhost:5191`。生产部署按实际 HTTPS 域名设置这些变量，并由代理提供作品源泛域名。
 
 数据包更新**无需重启服务**：`server/catalog.mjs` 每次读取 `dist/data.json` 前比较 mtime，文件变更后自动重新加载，依赖 catalog 版本的缓存随之失效。
 
@@ -28,9 +42,9 @@ npm test         # node --test test/*.test.mjs
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `5173` | 站点 / API 端口 |
 | `CONTENT_PORT` | `5180` | 作品沙盒内容端口 |
-| `DIST_DIR` | `./dist` | 构建产物（数据包）目录 |
+| `DIST_DIR` | `./dist` | 构建产物（数据包）目录；仓库不自带此目录，启动前必须提供 |
 | `DATA_DIR` | `./.data` | 数据库与运行数据目录 |
-| `CONTENT_ORIGIN_TEMPLATE` | `http://{token}.localhost:5180` | 作品 origin 模板，`{token}` 必须占满一个 host label；生产需独立泛域名 |
+| `CONTENT_ORIGIN_TEMPLATE` | `http://{token}.localhost:<CONTENT_PORT>` | 作品 origin 模板，默认端口 5180；`{token}` 必须占满一个 host label，生产需独立泛域名 |
 | `SITE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 可信前端 origin（逗号分隔，含协议与端口），同时允许凭据 CORS、API 写操作和 iframe 嵌入作品 |
 | `ADMIN_USERNAMES` | 空 | 始终持有管理员角色的用户名（逗号分隔） |
 | `CONTENT_CDN_ALLOWLIST` | `cdn.jsdelivr.net,unpkg.com,cdnjs.cloudflare.com,esm.sh,fonts.googleapis.com,fonts.gstatic.com` | 作品允许加载脚本/样式/字体/数据的公共 CDN 白名单 |
@@ -64,7 +78,7 @@ npm test         # node --test test/*.test.mjs
 | POST | `/api/arena/matches/:id/vote` | 对一场对战投票（限流） |
 | GET | `/api/leaderboard?task=&by=` | 排行榜，`by=config|model`，`task` 可选 |
 | GET | `/media/up-xxxxxxxx/(cover.png|cover.jpg|cover.webp|first.jpg|mobile.jpg)` | 投稿的封面/截图（CSP: default-src 'none'） |
-| GET | `/*` | dist 静态文件（本仓库定位下 dist 通常只放数据包，无站点页面时返回 404 属正常） |
+| GET | `/*` | `DIST_DIR` 内的静态数据包文件；不承诺提供画廊入口页面 |
 
 内容端口（默认 5180）：按 `CONTENT_ORIGIN_TEMPLATE` 的 `{token}` 子域伺服单个作品目录，施加沙盒 CSP 与 CDN 白名单（见 `server/content.mjs`）。
 
@@ -75,3 +89,5 @@ npm test         # node --test test/*.test.mjs
 ```bash
 npm test    # 19 个用例：排名、上传/审核/盲投、社区题目、昵称/热图、凭据 CORS 与 Cookie
 ```
+
+后端功能提交为本地 `51eb3cb`（`codex/gallery-integration`），配套画廊前端功能提交为 `1ee5dae`（`codex/backend-datapack-integration`）。功能提交前 19 项测试通过；跨端口真实浏览器联调也已覆盖登录/刷新、题目、昵称、HTML 投稿、审核、盲评、榜单及个人统计。公网 HTTPS、跨站 Cookie、自动截图、真机和全部原作交互尚未验证；这不等同于全站交互验证。上述分支均未 push。

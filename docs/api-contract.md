@@ -12,7 +12,7 @@
 
 ### 1.1 服务定位
 
-本服务是整个体系中**唯一的动态服务与唯一写库者**，负责账号、投票、排行榜、投稿审核与作品沙盒伺服。两个前端均为静态部署，除本服务外不存在其他后端；数据库（`DATA_DIR/platform.db`）由本服务独占，前端不直接读写。
+本服务是整个体系中**唯一的动态服务与唯一写库者**，负责账号、投票、排行榜、投稿审核与作品沙盒伺服。`same-prompt-gallery` 提供静态画廊前端与原作展示，`arenaofbias-server` 提供动态 API、数据库和投稿沙盒，`arenaofbias-data` 构建后端读取的馆藏数据包。两个前端各自部署并调用本服务；数据库（`DATA_DIR/platform.db`）由本服务独占，前端不直接读写。
 
 服务同时监听**两个端口**：
 
@@ -25,10 +25,11 @@
 
 | 环境 | Base URL |
 | --- | --- |
-| 本地开发 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180` |
+| 代码默认 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180`；启动仍需提供 `DIST_DIR` 数据包 |
+| 2026-09-28 本机联调 | 前端 `http://localhost:4175`；API 与媒体 `http://localhost:5190`；作品内容 `http://{token}.localhost:5191`。后端设 `PORT=5190`、`CONTENT_PORT=5191`、`SITE_ORIGINS=http://localhost:4175`、`DIST_DIR=<已构建数据包目录>`、`DATA_DIR=<隔离运行目录>`、`CAPTURE=0`；前端 API base URL 指向 `http://localhost:5190/` |
 | 生产环境 | **待拍板（占位）**：API 站点域与作品内容域需为**两个不同的可注册域**（作品域需泛域名，形如 `*.w.example.com`），以域名隔离作为作品沙盒的根基。生产域名尚未在公网验证，列为早期验证项 |
 
-作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。
+作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。投稿 `captures` / `cover` 返回相对路径 `media/...`，前端以 API 站点根解析；馆藏 `scene` 路径取自画廊所用数据包。
 
 ### 1.3 认证方式
 
@@ -489,7 +490,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 ### 3.13 站点静态文件
 
-`GET /*`（非 `/api/`、非 `/media/`）伺服 `DIST_DIR` 内文件：目录映射 `index.html`，不存在返回纯文本 `404 Not found`。`index.html` 附加站点 CSP 与 `Referrer-Policy: same-origin`。本仓库定位下 dist 通常只放数据包，画廊前端由此直接读取 `data.json` 与馆藏作品目录（见第 4 节）。
+`GET /*`（非 `/api/`、非 `/media/`）伺服 `DIST_DIR` 内文件：目录映射 `index.html`，不存在返回纯文本 `404 Not found`。`index.html` 附加站点 CSP 与 `Referrer-Policy: same-origin`。这条路由可分发数据包文件，但后端仓库不包含画廊入口页面，也不自带 `dist/`；独立画廊从自己的静态部署读取馆藏数据与作品目录（见第 4 节）。
 
 ### 3.14 `POST /api/questions` —— 发布社区题目
 
@@ -501,7 +502,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 ## 4. 数据包契约（`dist/data.json`）
 
-数据包由数据仓库（arenaofbias-data）构建产出，经 `DIST_DIR` 指向，**既是服务端馆藏目录的输入，也是画廊前端直接消费的静态资源**。其结构属契约的一部分。
+数据包由数据仓库（arenaofbias-data）构建产出；部署到 `DIST_DIR` 的副本是服务端馆藏目录输入。画廊前端从自己的静态部署消费对应数据与馆藏资源；若前后端各持有副本，应同步版本。其结构属契约的一部分。后端仓库当前无默认 `dist/`，运行前必须提供数据包。
 
 ### 4.1 顶层结构
 
@@ -537,7 +538,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 | `model` | 模型 ID（对应 `models[].id`） |
 | `effort` / `sourceLabel` | 档位 / 来源标签（服务端映射为 `tool`） |
 | `title` / `summary` / `addedAt` | 标题 / 简介 / 收录时间 |
-| `scene` | 作品目录相对路径（如 `results/grok-4.6/`），画廊前端按静态路径直接加载 |
+| `scene` | 作品目录相对路径（如 `results/grok-4.6/`），画廊前端按其静态部署路径加载；后端按其 `DIST_DIR` 副本供盲评使用 |
 | `source` / `readme` | 源码 / 说明链接 |
 | `gallery` | `[{ "src", "caption" }]` 图集 |
 | `captures` | `{ "条件id": "截图相对路径" }` |
@@ -547,7 +548,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 - 服务端 `server/catalog.mjs` 每次访问前比较 `dist/data.json` 的 **mtime**：mtime 不变则沿用内存副本，变化则整包重载。因此**更新数据包无需重启服务**，替换文件（mtime 变化）即生效。
 - catalog 版本号（即该 mtime）参与排行榜缓存键；数据包更新后相关缓存自动失效。
-- 馆藏作品目录（`scene` 指向的目录）由站点静态伺服直接分发，不走 API。
+- 后端可从 `DIST_DIR` 静态分发馆藏作品目录，不走 API；独立画廊则从自身静态部署加载馆藏资源。
 - 注意：**mtime 不变化的内容改写不会被感知**（如某些 CI 检出方式会保留 mtime），部署时应保证文件以新写入方式落地。
 
 ### 4.3 消费方注意点
