@@ -15,6 +15,7 @@ import {
 } from './http.mjs';
 import { createLibrary } from './library.mjs';
 import { createAdmin } from './admin.mjs';
+import { createInbox } from './inbox.mjs';
 import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
 import { registerShow1Compat } from './show1compat.mjs';
@@ -33,6 +34,7 @@ export function createPlatform({ config, limits }) {
   const auth = createAuth(db, { admins: config.admins, secureCookies: config.secureCookies, cookieSameSite: config.cookieSameSite, sessionTtl: limits.sessionTtl });
   const library = createLibrary({ db, catalog, config, limits });
   const adminService = createAdmin({ db, catalog, library });
+  const inbox = createInbox({ library, config, limits });
   const comments = createComments(db, library);
   const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
@@ -293,6 +295,40 @@ export function createPlatform({ config, limits }) {
     return { work: library.adminWork(work) };
   });
 
+  // Admin staging inbox: files wait here until they are previewed and registered as works.
+  router.on('GET', '/api/admin/inbox', (ctx) => {
+    adminOnly(ctx);
+    return inbox.list();
+  });
+  router.on('POST', '/api/admin/inbox', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const params = ctx.url.searchParams;
+    const buffer = await readBody(ctx.req, limits.uploadBytes);
+    return inbox.upload(admin, params.get('name'), buffer, params.get('overwrite') === '1');
+  });
+  router.on('POST', '/api/admin/inbox/register', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const work = inbox.register(admin, await readJson(ctx.req));
+    capturer.enqueue(work);
+    arena.invalidate();
+    return { work: library.adminWork(work) };
+  });
+  router.on('DELETE', '/api/admin/inbox', (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    return inbox.remove(admin, ctx.url.searchParams.get('id') ?? '');
+  });
+  // Inline edits (title/summary/model) from the works table; curated works stay repo-managed.
+  router.on('POST', '/api/admin/works/:task/:id/meta', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const work = library.setMeta(admin, ctx.params.task, ctx.params.id, await readJson(ctx.req));
+    arena.invalidate();
+    return { work };
+  });
+
   router.on('POST', '/api/arena/matches', async (ctx) => {
     limit.matches(ctx.user?.id ?? ctx.ip);
     const body = await readJson(ctx.req);
@@ -322,6 +358,20 @@ export function createPlatform({ config, limits }) {
       const found = media && resolveInside(library.mediaDir, `/${media[1]}/${media[2]}`);
       if (!found) return sendJson(res, 404, { error: '文件不存在' });
       return streamFile(req, res, found, { 'Cache-Control': 'public, max-age=300', 'Content-Security-Policy': "default-src 'none'" });
+    }
+    // Admin inbox previews stream straight from the staging directory; session-guarded
+    // because these files are not published works yet.
+    if (pathname.startsWith('/admin/inbox/')) {
+      if (auth.userFrom(req)?.role !== 'admin') {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Not found');
+      }
+      const found = inbox.resolve(pathname.slice('/admin/inbox'.length));
+      if (!found) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Not found');
+      }
+      return streamFile(req, res, found, { 'Cache-Control': 'no-store', ...(found.type ? { 'Content-Type': found.type } : {}) });
     }
     // The admin app lives in this repository and takes precedence over the dist fallback.
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {

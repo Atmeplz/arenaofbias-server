@@ -78,6 +78,8 @@ export function createLibrary({ db, catalog, config, limits }) {
     calibration: db.prepare('UPDATE works SET trial = ?, updated_at = ? WHERE id = ?'),
     arenaCalibration: db.prepare('UPDATE works SET calibration_arena = ?, updated_at = ? WHERE id = ?'),
     faceSettings: db.prepare('UPDATE works SET show_gallery = ?, show_arena = ?, audience = ?, updated_at = ? WHERE id = ?'),
+    meta: db.prepare('UPDATE works SET title = ?, summary = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?, updated_at = ? WHERE id = ?'),
+    votesOfWork: db.prepare('SELECT COUNT(*) AS n FROM votes WHERE task_id = ? AND (a_work = ? OR b_work = ?)'),
     override: db.prepare('SELECT * FROM work_overrides WHERE task_id = ? AND work_id = ?'),
     setOverride: db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
@@ -437,7 +439,9 @@ export function createLibrary({ db, catalog, config, limits }) {
       if (!tool) fail(400, '请填写生成工具');
       const who = identity(body);
       const cover = coverFrom(body.cover);
-      if (q.pendingOf.get(user.id).n >= limits.pendingPerUser) fail(429, `你已有 ${limits.pendingPerUser} 件作品在等待核验，请等核验后再上传`);
+      // Admins stage inbox registrations as unverified works in bulk; the per-user
+      // pending cap only exists to throttle regular submitters.
+      if (user.role !== 'admin' && q.pendingOf.get(user.id).n >= limits.pendingPerUser) fail(429, `你已有 ${limits.pendingPerUser} 件作品在等待核验，请等核验后再上传`);
 
       let id = workId();
       while (q.work.get(id)) id = workId();
@@ -463,6 +467,21 @@ export function createLibrary({ db, catalog, config, limits }) {
       const work = upload(draft.task_id, id);
       audit(user, 'submit', work, `${work.modelName}${work.effort ? ` · ${work.effort}` : ''}`);
       return work;
+    },
+
+    setMeta(admin, taskId, id, body) {
+      const work = upload(taskId, id);
+      if (!work) fail(404, '作品不存在', 'not_found');
+      if (!plainObject(body) || !Object.keys(body).length ||
+        Object.keys(body).some((key) => !['title', 'summary', 'modelName', 'modelId', 'effort'].includes(key))) fail(400, '没有可修改的内容');
+      const title = body.title === undefined ? work.title : clip(body.title, 40);
+      if (!title) fail(400, '请填写作品标题');
+      const summary = body.summary === undefined ? work.summary : clip(body.summary, 200);
+      const who = body.modelId !== undefined || body.modelName !== undefined ? identity(body) : work;
+      const effort = body.effort !== undefined ? effortOf(body.effort) : work.effort;
+      q.meta.run(title, summary, who.modelId, who.modelName, who.vendor, effort, Date.now(), id);
+      audit(admin, 'meta', work, '编辑信息');
+      return this.adminWork(upload(taskId, id));
     },
 
     setCaptures(id, captures) {
@@ -505,6 +524,8 @@ export function createLibrary({ db, catalog, config, limits }) {
       const work = upload(taskId, id);
       if (!work) fail(404, '作品不存在');
       if (work.ownerId !== user.id && user.role !== 'admin') fail(403, '只能删除自己上传的作品');
+      const votes = q.votesOfWork.get(taskId, id, id).n;
+      if (votes > 0) fail(409, `这件作品已有 ${votes} 票对局记录，删除会破坏历史。请用「标记存疑」让它下线`);
       const now = Date.now();
       q.remove.run(now, user.id, now, id);
       rmSync(join(dirs.works, id), { recursive: true, force: true });

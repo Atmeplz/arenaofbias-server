@@ -454,9 +454,14 @@ describe('platform lifecycle', () => {
 
   test('only the author or an admin can delete an upload', async () => {
     assert.equal((await call('bob', 'DELETE', `/api/works/one/${upload.id}`)).status, 403);
-    assert.equal((await call('alice', 'DELETE', `/api/works/one/${upload.id}`)).status, 200);
-    assert.equal((await fetchContent(upload.scene)).status, 410);
+    assert.equal((await call('alice', 'DELETE', `/api/works/one/${upload.id}`)).status, 409, 'works with votes keep the match history; question them instead');
+    assert.equal((await fetchContent(upload.scene)).status, 200, 'the voted work stays online');
     assert.equal((await call('root', 'DELETE', '/api/works/one/a1')).status, 409, 'curated works are managed in the repository');
+    const staged = await call('alice', 'POST', '/api/drafts?task=one&name=temp.html', '<!doctype html><html><head><title>Temp</title></head><body><p>Temp</p></body></html>', { raw: true });
+    const temp = await call('alice', 'POST', '/api/works', { draftId: staged.data.draft.id, confirmed: true, title: 'Temp', modelId: 'm-a', tool: 'CLI' });
+    assert.equal(temp.status, 200);
+    assert.equal((await call('bob', 'DELETE', `/api/works/one/${temp.data.work.id}`)).status, 403);
+    assert.equal((await call('alice', 'DELETE', `/api/works/one/${temp.data.work.id}`)).status, 200, 'vote-free works delete freely');
   });
 
   test('user administration is admin-only, guards self-demotion and writes audit', async () => {
@@ -627,6 +632,6 @@ describe('platform lifecycle', () => {
     assert.ok(!(await call('guest', 'GET', '/api/bootstrap')).data.works.some((work) => work.id === id));
     assert.ok((await call('guest', 'GET', '/api/show1/works')).data.works.some((work) => work.id === id));
     assert.equal((await call('guest', 'GET', `${path}/comments`)).status, 200);
-    assert.equal((await call('guest', 'GET', '/api/bootstrap')).data.arena.one.works, 3);
+    assert.equal((await call('guest', 'GET', '/api/bootstrap')).data.arena.one.works, 4, 'the voted upload stays in the pool: match history anchors it');
   });
 });

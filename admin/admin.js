@@ -167,7 +167,8 @@ const state = { user: undefined, data: null, works: null, audit: [], users: null
   system: store.get('admin-system') === 'arena' ? 'arena' : 'gallery', adminWorks: [], workTotal: 0,
   workCache: new Map(), workKey: '', workLoading: false, trafficLoading: false, requestId: 0,
   sidebarCollapsed: store.get('admin-sidebar-collapsed') === '1',
-  workPage: 1, workTask: '', workStatus: '', workShow: '', workSearch: '', traffic: null };
+  workPage: 1, workTask: '', workStatus: '', workShow: '', workSearch: '', traffic: null,
+  inbox: null, inboxForms: {} };
 const taskTitle = (id) => [...(state.data?.tasks ?? []), ...(state.questions ?? [])].find((t) => t.id === id)?.title ?? id;
 
 async function loadCatalog() {
@@ -186,10 +187,18 @@ async function loadReview() {
   state.audit = data.audit;
 }
 
+async function loadInbox() {
+  try {
+    state.inbox = (await api('admin/inbox')).entries;
+  } catch {
+    state.inbox = [];
+  }
+}
+
 async function removeWork(w) {
   const ok = await confirmDialog({
     title: '删除这件作品？',
-    message: `「${w.title}」的文件会被永久删除，展厅中不再显示。${w.status === 'verified' ? '它参与过的盲评投票会从榜单中移出。' : ''}操作会记入审核记录。`,
+    message: `「${w.title}」的文件会被永久删除，展厅中不再显示。参与过盲评（有对局记录）的作品会被拒绝删除，请改用「标记存疑」让它下线。操作会记入审核记录。`,
     confirm: '删除',
     danger: true,
   });
@@ -368,7 +377,7 @@ function openReview(w) {
 
 // ---- views -----------------------------------------------------------------------------------
 const app = () => $('#app');
-const routeParts = () => location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+const routeParts = () => location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
 const TABS = [
   { id: 'review', label: '审核', icon: 'shield' },
   { id: 'works', label: '作品', icon: 'file' },
@@ -424,6 +433,81 @@ function pageHero(kicker, title, lead, stats) {
 }
 
 // -- review tab --
+// -- admin staging inbox (代传收件箱) -----------------------------------------------
+// Files wait here until an admin previews them and registers them as works;
+// registration reuses the platform draft pipeline, so uploads default to
+// 展览馆开 / 正式盲测关 and never auto-publish.
+function inboxPanel() {
+  const entries = state.inbox ?? [];
+  const tasks = [...(state.data?.tasks ?? []), ...(state.questions ?? [])];
+  const taskOptions = (selected) => tasks.map((t) => `<option value="${esc(t.id)}"${t.id === selected ? ' selected' : ''}>${esc(t.title)}</option>`).join('');
+  const modelOptions = (selected) => (state.data?.models ?? []).map((m) => `<option value="${esc(m.id)}"${m.id === selected ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
+  const cards = entries.map((entry) => {
+    const form = state.inboxForms[entry.id] ??= {
+      task: store.get('admin-inbox-task') ?? '', title: entry.suggest.title, summary: '',
+      modelId: '', modelName: entry.suggest.model, effort: '', publish: false, show_gallery: true, show_arena: false };
+    const value = (name) => esc(String(form[name] ?? ''));
+    const checked = (name) => (form[name] ? 'checked' : '');
+    return `<article class="inbox-card" data-inbox-id="${esc(entry.id)}">
+      <div class="inbox-preview"><iframe src="${esc(entry.preview)}" sandbox="allow-scripts allow-pointer-lock" loading="lazy" title="预览「${esc(entry.name)}」"></iframe><a class="btn sm inbox-open" href="${esc(entry.preview)}" target="_blank" rel="noopener">新窗口打开 ${icon('arrow')}</a></div>
+      <form class="inbox-form" novalidate>
+        <p class="inbox-name">${icon('file')}<b>${esc(entry.name)}</b><span>${formatBytes(entry.size)}</span></p>
+        <div class="field-row">
+          <label class="field"><span class="field-label">题目</span><select class="input" name="task" required><option value="">选择题目</option>${taskOptions(form.task)}</select></label>
+          <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">不登记（用自由文本）</option>${modelOptions(form.modelId)}</select></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${value('title')}"></label>
+          <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${value('modelName')}" placeholder="如 Claude 4.5"></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span class="field-label">摘要</span><input class="input" name="summary" maxlength="200" value="${value('summary')}"></label>
+          <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${value('effort')}" placeholder="默认 / 未设置"></label>
+        </div>
+        <div class="face-checks">
+          <label><input type="checkbox" name="publish" ${checked('publish')}> 登记后直接通过验证</label>
+          <label><input type="checkbox" name="show_gallery" ${checked('show_gallery')}> 展览馆显示</label>
+          <label><input type="checkbox" name="show_arena" ${checked('show_arena')}> 正式盲测</label>
+        </div>
+        <p class="fine">不勾选「直接通过验证」时，作品会登记为待核验，稍后在下方队列核验发布。</p>
+        <p class="form-error" role="alert"></p>
+        <div class="actions"><button type="button" class="btn sm danger ghost" data-inbox-remove>${icon('trash')}移除</button><span class="spacer"></span><button class="btn sm primary" type="submit">${icon('check')}登记入库</button></div>
+      </form>
+    </article>`;
+  }).join('');
+  return `<section class="block inbox-panel" aria-label="管理员代传">
+    <div class="inbox-head"><h2>管理员代传 · 收件箱</h2><span class="muted">文件先暂存在这里预览，登记后才进入待核验队列</span><button class="btn sm" type="button" data-inbox-reload>${icon('reload')}刷新</button></div>
+    <div class="inbox-drop" data-inbox-drop>
+      <input class="inbox-file-input" type="file" accept=".html,.htm,.zip" multiple data-inbox-input aria-hidden="true" tabindex="-1">
+      <p><b>把 HTML 单文件或 ZIP 拖到这里</b>，或</p>
+      <button class="btn" type="button" data-inbox-pick>选择文件</button>
+      <p class="fine">支持多选，单件不超过 30 MB。文件名用「标题，模型名.html」可以自动填表。</p>
+    </div>
+    ${state.inbox === null ? skeleton(2) : cards ? `<div class="inbox-list">${cards}</div>` : ''}
+  </section>`;
+}
+
+async function inboxUpload(files) {
+  const list = [...files].filter((file) => /\.(html?|zip)$/i.test(file.name));
+  if (!list.length) { toast('只支持 .html / .htm / .zip 文件'); return; }
+  for (const file of list) {
+    if (file.size > 30 * 1024 * 1024) { toast(`「${file.name}」超过 30 MB，已跳过`); continue; }
+    toast(`正在上传：${file.name}`);
+    const query = new URLSearchParams({ name: file.name });
+    const send = (overwrite) => fetch(`/api/admin/inbox?${query}${overwrite ? '&overwrite=1' : ''}`,
+      { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    let response = await send(false);
+    if (response.status === 409) {
+      const overwrite = await confirmDialog({ title: '收件箱里已有同名文件', message: `「${file.name}」已经在收件箱里了，覆盖它？`, confirm: '覆盖' });
+      if (!overwrite) continue;
+      response = await send(true);
+    }
+    if (!response.ok) toast((await response.json().catch(() => ({}))).error ?? '上传失败');
+  }
+  await loadInbox();
+  render({ soft: true });
+}
+
 function reviewView(sub) {
   const tab = Object.hasOwn(REVIEW_TABS, sub ?? '') ? sub : 'unverified';
   const works = state.works ?? [];
@@ -441,8 +525,8 @@ function reviewView(sub) {
       : `<div class="board-empty"><p class="board-empty-title">${tab === 'unverified' ? '没有等待核验的作品' : `没有${REVIEW_TABS[tab]}的投稿`}</p><p>${tab === 'unverified' ? '新的投稿会按提交顺序出现在这里。' : '馆藏作品由仓库收录流程管理，不在这里审核。'}</p></div>`;
   }
   return `${pageHero('审核管理', '审核', '核对每件投稿能否运行、是否符合题目、生成信息是否可信。通过的作品进入盲评并优先展示；无法核实的标记存疑并写明原因。', [['待核验', count('unverified')], ['已验证', count('verified')], ['存疑', count('questioned')]])}
+  ${inboxPanel()}
   <section class="block">
-    <div class="actions admin-toolbar"><button class="btn primary" type="button" data-admin-upload>代传作品</button></div>
     <nav class="seg review-tabs" aria-label="审核分类">${Object.entries(REVIEW_TABS).map(([id, text]) => `<a href="#/review/${id}"${id === tab ? ' aria-current="page"' : ''}>${text}${id === 'log' ? '' : `<span>${count(id)}</span>`}</a>`).join('')}</nav>
     ${state.works === null ? skeleton(5) : list}
   </section>`;
@@ -489,7 +573,7 @@ function adminWorkRow(w, face = state.system) {
     <td>${esc(w.modelName)}</td><td>${w.source === 'curated' ? '精选' : '投稿'}</td><td>${statusBadge(w.status)}</td>
     <td><label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}${face === 'gallery' ? '在展览馆显示' : '进正式盲测'}">${w[`show_${face}`] ? '已开启' : '已关闭'}</label></td>
     ${face === 'arena' ? `<td>${w.status === 'verified' && w.show_arena ? '在正式盲测池' : '不在正式盲测池'}</td>` : '<td>—</td>'}
-    <td><div class="actions"><button class="btn sm" data-calibrate="${esc(w.id)}">${label}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `<button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
+    <td><div class="actions"><button class="btn sm" data-calibrate="${esc(w.id)}">${label}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `<button class="btn sm" data-edit="${esc(w.id)}">编辑</button><button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
   </tr>`;
 }
 function systemWorksView() {
@@ -528,6 +612,33 @@ function trafficView() {
 function placeholderView(route) {
   const title = route === 'guess' ? '模一把' : '活动管理';
   return `${pageHero('玩法 / 即将开放', title, '工作台入口已就位，功能建设中。', [])}<section class="block placeholder-module"><div class="placeholder-symbol">${icon(route === 'guess' ? 'game' : 'calendar')}</div><p class="eyebrow">玩法模块 / ${route === 'guess' ? '01' : '02'}</p><h2>功能建设中</h2><p>这里会接入「${title}」的管理工具。现有作品、题目与审核功能可继续使用。</p><a class="btn" href="#/works">返回作品管理 ${icon('arrow')}</a></section>`;
+}
+
+// Inline edit of an upload's registration info (title/summary/model); curated
+// works are repo-managed and never get this dialog.
+function editDialog(w) {
+  const models = state.data?.models ?? [];
+  const sheet = openDialog({ title: `编辑信息 · ${w.title}`, body: `<form class="admin-editor">
+    <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${esc(w.title)}" required></label>
+    <div class="field-row">
+      <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${esc(w.modelName)}" required></label>
+      <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${esc(w.effort)}" placeholder="默认 / 未设置"></label>
+    </div>
+    <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">不登记（保持自由文本）</option>${models.map((m) => `<option value="${esc(m.id)}"${m.id === w.model ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+    <label class="field"><span class="field-label">作品摘要</span><textarea class="input" name="summary" maxlength="200" rows="2">${esc(w.summary)}</textarea></label>
+    <p class="form-error" role="alert"></p><button class="btn primary" type="submit">保存</button></form>` });
+  const form = $('form', sheet.el);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const done = busy($('button[type="submit"]', form), '正在保存…');
+    try {
+      await api(`admin/works/${workKey(w)}/meta`, { method: 'POST', body: { title: form.title.value, summary: form.summary.value,
+        modelName: form.modelName.value, modelId: form.modelId.value || undefined, effort: form.effort.value } });
+      sheet.close();
+      toast('信息已更新');
+      await reload();
+    } catch (error) { $('.form-error', form).textContent = error.message; done(); }
+  });
 }
 
 function calibrationDialog(w) {
@@ -591,36 +702,6 @@ async function editorialDialog(taskId) {
     const done = busy($('button[type="submit"]', form), '正在保存…');
     try { await api(`admin/tasks/${encodeURIComponent(taskId)}/editorial`, { method: 'POST', body }); sheet.close(); toast('主编视角已保存'); }
     catch (error) { $('.form-error', form).textContent = error.message; done(); update(); }
-  });
-}
-
-function uploadDialog() {
-  const tasks = [...(state.data?.tasks ?? []), ...(state.questions ?? [])];
-  const sheet = openDialog({ title: '管理员代传作品', body: `<form class="admin-editor">
-    <label class="field"><span class="field-label">题目</span><select class="input" name="task" required>${tasks.map((t) => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</select></label>
-    <label class="field"><span class="field-label">HTML 单文件或 ZIP</span><input class="input" type="file" name="file" accept=".html,.htm,.zip" required></label>
-    <label class="field"><span class="field-label">标题</span><input class="input" name="title" maxlength="40" required></label>
-    <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" required></label>
-    <label class="field"><span class="field-label">摘要</span><textarea class="input" name="summary" maxlength="200" rows="2"></textarea></label>
-    <div class="face-checks"><label><input type="checkbox" name="show_gallery" checked> 展览馆显示</label><label><input type="checkbox" name="show_arena"> 正式盲测<small>默认关闭，手动开启才进正式盲测池</small></label></div>
-    <p class="form-error" role="alert"></p><button class="btn primary" type="submit">上传并通过验证</button></form>` });
-  const form = $('form', sheet.el);
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const field = (name) => form.elements.namedItem(name);
-    const file = field('file').files[0];
-    if (!file) return;
-    const query = new URLSearchParams({ task: field('task').value, name: file.name, title: field('title').value,
-      modelName: field('modelName').value, summary: field('summary').value,
-      show_gallery: field('show_gallery').checked ? '1' : '0', show_arena: field('show_arena').checked ? '1' : '0' });
-    const done = busy($('button[type="submit"]', form), '正在上传…');
-    try {
-      const response = await fetch(`/api/admin/works/upload?${query}`, { method: 'POST', credentials: 'same-origin', body: file });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? '上传失败');
-      state.workCache.clear();
-      sheet.close(); toast(`已代传：${data.work.title}`); await reload();
-    } catch (error) { $('.form-error', form).textContent = error.message; done(); }
   });
 }
 
@@ -703,6 +784,20 @@ function worksQuery() {
   if (state.workSearch) query.set('search', state.workSearch);
   return query;
 }
+// Works filters live in the hash (#/works?task=…&status=…) so views can be shared as links.
+function syncWorksHash() {
+  const hash = `#/works${state.workPage > 1 || state.workTask || state.workStatus || state.workShow || state.workSearch ? `?${worksQuery()}` : ''}`;
+  history.replaceState(null, '', hash);
+}
+function applyWorksHash() {
+  const query = new URLSearchParams(location.hash.split('?')[1] ?? '');
+  const pick = (key, fallback) => (query.has(key) ? String(query.get(key) ?? '') : fallback);
+  state.workPage = Math.max(1, Number(pick('page', '1')) || 1);
+  state.workTask = pick('task', state.workTask);
+  state.workStatus = pick('status', state.workStatus);
+  state.workShow = pick('show', state.workShow);
+  state.workSearch = pick('search', state.workSearch);
+}
 const rowSignatures = new Map();
 let renderedWorkSignature = '';
 let renderedContent = '';
@@ -750,6 +845,7 @@ async function reload({ navigation = false } = {}) {
   const system = state.system;
   let key = '';
   if (route === 'works') {
+    if (navigation) applyWorksHash();
     key = worksQuery().toString();
     if (navigation || state.workKey !== key) {
       const cached = state.workCache.get(key);
@@ -773,7 +869,7 @@ async function reload({ navigation = false } = {}) {
     } else if (route === 'traffic') {
       state.traffic = await api('admin/traffic?days=30');
       state.trafficLoading = false;
-    } else if (route === 'review') await loadReview();
+    } else if (route === 'review') await Promise.all([loadReview(), loadInbox()]);
     if (requestId !== state.requestId) return;
     state.error = '';
   } catch (error) {
@@ -884,11 +980,26 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (e.target.closest('[data-theme-toggle]')) { toggleTheme(); return; }
-  if (e.target.closest('[data-admin-upload]')) { uploadDialog(); return; }
+  const inboxPick = e.target.closest('[data-inbox-pick]');
+  if (inboxPick) { $('.inbox-panel [data-inbox-input]')?.click(); return; }
+  const inboxReload = e.target.closest('[data-inbox-reload]');
+  if (inboxReload) { toast('正在刷新收件箱…'); await loadInbox(); render({ soft: true }); return; }
+  const inboxRemove = e.target.closest('[data-inbox-remove]');
+  if (inboxRemove) {
+    const card = inboxRemove.closest('[data-inbox-id]');
+    const id = card?.dataset.inboxId;
+    if (id && await confirmDialog({ title: '移除这个文件？', message: '文件会从收件箱删除，不会登记为作品。', confirm: '移除', danger: true })) {
+      try { await api(`admin/inbox?id=${encodeURIComponent(id)}`, { method: 'DELETE' }); delete state.inboxForms[id]; await loadInbox(); render({ soft: true }); }
+      catch (error) { toast(error.message); }
+    }
+    return;
+  }
   const page = e.target.closest('[data-page]');
-  if (page && !page.disabled) { state.workPage = Number(page.dataset.page); await reload({ navigation: true }); return; }
+  if (page && !page.disabled) { state.workPage = Number(page.dataset.page); syncWorksHash(); await reload({ navigation: true }); return; }
   const calibrate = e.target.closest('[data-calibrate]');
   if (calibrate) { const w = state.adminWorks.find((item) => item.id === calibrate.dataset.calibrate); if (w) calibrationDialog(w); return; }
+  const editBtn = e.target.closest('[data-edit]');
+  if (editBtn) { const w = state.adminWorks.find((item) => item.id === editBtn.dataset.edit); if (w) editDialog(w); return; }
   const note = e.target.closest('[data-task-note]');
   if (note) { await editorialDialog(note.dataset.taskNote); return; }
   if (e.target.closest('[data-logout]')) {
@@ -953,6 +1064,12 @@ document.addEventListener('click', async (e) => {
   }
 });
 document.addEventListener('change', async (e) => {
+  const input = e.target.closest('[data-inbox-input]');
+  if (input) {
+    if (input.files.length) await inboxUpload(input.files);
+    input.value = '';
+    return;
+  }
   const toggle = e.target.closest('[data-face-toggle]');
   if (!toggle) return;
   const work = state.adminWorks.find((item) => item.id === toggle.dataset.faceToggle);
@@ -967,7 +1084,39 @@ document.addEventListener('change', async (e) => {
   } catch (error) { toggle.checked = !toggle.checked; toggle.disabled = false; toast(error.message); }
   finally { if (toggle.isConnected) { toggle.disabled = false; toggle.parentElement.classList.remove('is-saving'); toggle.parentElement.removeAttribute('aria-busy'); } }
 });
+// Inbox form fields survive re-renders through state.inboxForms (keyed by entry id).
+document.addEventListener('input', (e) => {
+  const card = e.target.closest('.inbox-card[data-inbox-id]');
+  const form = e.target.closest('form');
+  if (!card || !form || !state.inboxForms[card.dataset.inboxId]) return;
+  const stored = state.inboxForms[card.dataset.inboxId];
+  if (e.target.name in stored) stored[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+});
 document.addEventListener('submit', async (e) => {
+  if (e.target.classList?.contains('inbox-form')) {
+    e.preventDefault();
+    const card = e.target.closest('[data-inbox-id]');
+    const id = card?.dataset.inboxId;
+    const stored = state.inboxForms[id];
+    if (!id || !stored) return;
+    const error = $('.form-error', e.target);
+    if (!stored.task) { error.textContent = '请选择题目'; return; }
+    if (!stored.modelId && !stored.modelName.trim()) { error.textContent = '请填写模型名称，或从「登记为模型」里选择'; return; }
+    const done = busy($('button[type="submit"]', e.target), '正在登记…');
+    try {
+      const data = await api('admin/inbox/register', { method: 'POST', body: {
+        id, task: stored.task, title: stored.title, summary: stored.summary, modelId: stored.modelId || undefined,
+        modelName: stored.modelName, effort: stored.effort, publish: Boolean(stored.publish),
+        show_gallery: Boolean(stored.show_gallery), show_arena: Boolean(stored.show_arena) } });
+      store.set('admin-inbox-task', stored.task);
+      delete state.inboxForms[id];
+      state.workCache.clear();
+      toast(`${stored.publish ? '已登记并发布' : '已登记为待核验'}：${data.work.title}`);
+      await Promise.all([loadInbox(), loadReview()]);
+      render({ soft: true });
+    } catch (err) { error.textContent = err.message; done(); }
+    return;
+  }
   if (e.target.id !== 'admin-work-filter') return;
   e.preventDefault();
   const form = e.target;
@@ -976,7 +1125,27 @@ document.addEventListener('submit', async (e) => {
   state.workStatus = form.elements.namedItem('status').value;
   state.workShow = form.elements.namedItem('show').value;
   state.workPage = 1;
+  syncWorksHash();
   await reload({ navigation: true });
+});
+// Drag-and-drop for the staging inbox; the events do not delegate cleanly, so the
+// drop zone tracks dragging state through document-level listeners.
+document.addEventListener('dragover', (e) => {
+  const zone = e.target.closest?.('[data-inbox-drop]');
+  if (!zone) return;
+  e.preventDefault();
+  zone.classList.add('dragging');
+});
+document.addEventListener('dragleave', (e) => {
+  const zone = e.target.closest?.('[data-inbox-drop]');
+  if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove('dragging');
+});
+document.addEventListener('drop', async (e) => {
+  const zone = e.target.closest?.('[data-inbox-drop]');
+  if (!zone) return;
+  e.preventDefault();
+  zone.classList.remove('dragging');
+  if (e.dataTransfer?.files?.length) await inboxUpload(e.dataTransfer.files);
 });
 addEventListener('hashchange', () => { if (state.user?.role === 'admin') reload({ navigation: true }); });
 
