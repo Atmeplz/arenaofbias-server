@@ -133,6 +133,11 @@ export function createInbox({ library, config, limits }) {
         work = library.review(admin, work.taskId, work.id, { status: 'verified',
           show_gallery: body.show_gallery === undefined ? true : Boolean(body.show_gallery),
           show_arena: Boolean(body.show_arena) });
+      } else {
+        // Per-face review: registration decides nothing about display. The work waits
+        // with both faces off until each system's review turns its own face on.
+        library.setFaceSettings(admin, work.taskId, work.id, { show_gallery: false, show_arena: false });
+        work = library.work(work.taskId, work.id);
       }
       destroy(id);
       library.audit(admin, 'inbox-register', work, `${meta.name}${body.publish ? ' · 登记并发布' : ' · 登记为待核验'}`);

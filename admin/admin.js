@@ -150,8 +150,15 @@ const statusBadge = (status, reason = '') => {
   const info = STATUS[status];
   return info ? `<span class="status status-${status}" title="${esc(reason || info.hint)}">${icon(info.icon)}${info.label}</span>` : '';
 };
-const ACTIONS = { submit: '提交作品', verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证', delete: '删除作品', role: '调整角色' };
-const REVIEW_TABS = { unverified: '未验证', verified: '已验证', questioned: '存疑', log: '记录' };
+const ACTIONS = { submit: '提交作品', verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证', delete: '删除作品', role: '调整角色',
+  'face-settings': '门面开关', meta: '编辑信息', 'inbox-upload': '收件箱上传', 'inbox-register': '登记入库', 'inbox-remove': '收件箱移除' };
+// Per-face review: the same work is approved separately for the gallery (display)
+// and the arena (blind test). `audience` carries both flags; adminWork rows also
+// carry explicit show_gallery/show_arena.
+const AUDIENCE_FACE = { gallery: ['show2', 'both'], arena: ['show1', 'both'] };
+const faceOn = (w, face = state.system) => Boolean(w[`show_${face}`] ?? AUDIENCE_FACE[face].includes(w.audience));
+const FACE_LABEL = { gallery: '展览馆', arena: '竞技场' };
+const REVIEW_TABS = { pending: '待审', shown: '已展示', questioned: '存疑', log: '记录' };
 const skeleton = (count = 4, kind = 'row') => `<div class="skeleton-list" aria-label="正在载入" role="status">${Array.from({ length: count }, () => `<div class="skeleton skeleton-${kind}"></div>`).join('')}</div>`;
 function busy(button, text = '处理中…') {
   if (!button) return () => {};
@@ -256,10 +263,14 @@ function thumb(w) {
 }
 
 function workRow(w) {
+  const face = state.system;
+  const quick = w.status === 'questioned' ? '' : faceOn(w, face)
+    ? `<button class="btn sm" data-withdraw="${esc(w.id)}" title="本面撤下，不影响另一面">${icon('close')}撤下</button>`
+    : `<button class="btn sm primary" data-verify="${esc(w.id)}" title="内容核验通过并${face === 'gallery' ? '上展览馆' : '进入正式盲测'}">${icon('check')}${face === 'gallery' ? '上展览馆' : '进盲测'}</button>`;
   return `<article class="work-row" data-status="${esc(w.status)}">
     ${thumb(w)}
     <div class="work-main">
-      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未公开迁入</span>' : ''}</p>
+      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未展示</span>' : ''}</p>
       <h3>${esc(w.title)}</h3>
       <p class="work-meta">${esc(taskTitle(w.task))} · ${esc(w.tool)} · ${formatDate(w.addedAt)} · 投稿者 ${esc(w.owner ?? '已注销的用户')}</p>
       ${w.reason ? `<p class="work-reason">${icon('alert')}<span>${esc(w.reason)}</span></p>` : ''}
@@ -267,6 +278,7 @@ function workRow(w) {
     <div class="work-side">
       <div class="actions">
         <a class="btn sm" href="${esc(w.scene)}" target="_blank" rel="noopener">打开${icon('arrow')}</a>
+        ${quick}
         <button class="btn sm primary" data-review="${esc(w.id)}">审核</button>
         <button class="icon-btn" data-delete="${esc(w.id)}" title="删除作品" aria-label="删除「${esc(w.title)}」">${icon('trash')}</button>
       </div>
@@ -288,6 +300,7 @@ function trialRows(trial) {
 }
 
 function openReview(w) {
+  const face = state.system;
   const vendors = new Map();
   for (const model of state.data?.models ?? []) {
     if (!vendors.has(model.vendor)) vendors.set(model.vendor, []);
@@ -296,7 +309,7 @@ function openReview(w) {
   const options = [...vendors].sort(([a], [b]) => a.localeCompare(b, 'en', { sensitivity: 'base' }))
     .map(([vendor, models]) => `<optgroup label="${esc(vendor)}">${models.map((m) => `<option value="${esc(m.id)}"${m.id === w.model ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</optgroup>`).join('');
   const sheet = openDialog({
-    title: '核验作品',
+    title: `${FACE_LABEL[face]}审核`,
     className: 'review-sheet',
     body: `<div class="review">
       <div class="review-facts">
@@ -326,21 +339,26 @@ function openReview(w) {
         </ul>
         <p class="fine">清单只是提醒，不会随结果保存。</p>
         <div class="field-row">
-          <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">保持声明：${esc(w.modelName)}</option>${options}</select></label>
+          <label class="field"><span class="field-label">登记为模型<small>挂到模型档案，排行榜按模型记分</small></span><select class="input" name="modelId"><option value="">保持声明：${esc(w.modelName)}</option>${options}</select></label>
           <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${esc(w.effort)}" placeholder="默认 / 未设置"></label>
         </div>
         <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${esc(w.title)}" required></label>
-        <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${esc(w.modelName)}" required></label>
+        <label class="field"><span class="field-label">模型名称<small>展签显示的名字</small></span><input class="input" name="modelName" maxlength="60" value="${esc(w.modelName)}" required></label>
         <label class="field"><span class="field-label">作品摘要</span><textarea class="input" name="summary" maxlength="200" rows="2">${esc(w.summary)}</textarea></label>
-        <div class="face-checks"><label><input type="checkbox" name="show_gallery" ${w.status === 'unverified' || ['show2', 'both'].includes(w.audience) ? 'checked' : ''}> 展览馆显示</label><label><input type="checkbox" name="show_arena" ${w.show_arena ? 'checked' : ''}> 正式盲测<small>默认关闭，手动开启才进正式盲测池</small></label></div>
+        <div class="face-decision">
+          <p class="face-state">${faceOn(w) ? `${FACE_LABEL[face]}：已${face === 'gallery' ? '展示' : '进正式盲测池'}` : `${FACE_LABEL[face]}：未${face === 'gallery' ? '展示' : '进盲测'}`}</p>
+          <p class="fine">本面动作只改${FACE_LABEL[face]}，另一面（${face === 'gallery' ? `盲测：${faceOn(w, 'arena') ? '已进正式盲测池' : '未进'}` : `展览馆：${faceOn(w, 'gallery') ? '已展示' : '未展示'}`}）保持不变。</p>
+          ${face === 'arena' ? '<label class="face-checks"><input type="checkbox" disabled> 娱乐盲测<small>待接线：接线后作品可进 Show1 娱乐面与老作品对打</small></label>' : ''}
+        </div>
         <label class="field"><span class="field-label">说明<small>标记存疑时必填，作者与访客都能看到</small></span><textarea class="input" name="reason" rows="3" maxlength="500">${esc(w.status === 'questioned' ? w.reason : '')}</textarea></label>
         <p class="form-error" role="alert"></p>
         <div class="sheet-actions">
           <button type="button" class="btn danger ghost" data-remove>${icon('trash')}删除</button>
           <span class="spacer"></span>
-          ${w.status !== 'unverified' ? '<button type="button" class="btn ghost" data-decide="unverified">退回未验证</button>' : ''}
           <button type="button" class="btn" data-decide="questioned">${icon('alert')}标记存疑</button>
-          <button type="button" class="btn primary" data-decide="verified">${icon('check')}通过验证</button>
+          ${faceOn(w)
+            ? `<button type="button" class="btn" data-decide="hide">从${FACE_LABEL[face]}${face === 'gallery' ? '撤下' : '移出'}</button>`
+            : `<button type="button" class="btn primary" data-decide="show">${icon('check')}${face === 'gallery' ? '通过并上展览馆' : '通过并进盲测'}</button>`}
         </div>
       </form>
     </div>`,
@@ -355,9 +373,16 @@ function openReview(w) {
     }
     if (!decide) return;
     const field = (name) => form.elements.namedItem(name);
-    const body = { status: decide.dataset.decide, reason: field('reason').value, effort: field('effort').value,
+    if (decide.dataset.decide === 'questioned' && !field('reason').value.trim()) {
+      $('.form-error', form).textContent = '标记存疑时请写明原因，作者和访客都会看到';
+      return;
+    }
+    // Only the current face's flag moves; the server keeps the other face as-is.
+    const mode = decide.dataset.decide;
+    const body = { status: mode === 'show' ? 'verified' : mode === 'hide' ? w.status : 'questioned',
+      reason: field('reason').value, effort: field('effort').value,
       title: field('title').value, summary: field('summary').value,
-      show_gallery: field('show_gallery').checked, show_arena: field('show_arena').checked };
+      [`show_${face}`]: mode === 'show' };
     if (field('modelId').value) body.modelId = field('modelId').value;
     else if (field('modelName').value !== w.modelName) body.modelName = field('modelName').value;
     $$('[data-decide]', form).forEach((b) => { b.disabled = true; });
@@ -365,7 +390,7 @@ function openReview(w) {
     try {
       await api(`works/${encodeURIComponent(w.task)}/${encodeURIComponent(w.id)}/review`, { method: 'POST', body });
       sheet.close();
-      toast(`已${{ verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证' }[body.status]}：${w.title}`);
+      toast(`${{ show: `已${face === 'gallery' ? '上展览馆' : '进盲测'}`, hide: `已从${FACE_LABEL[face]}${face === 'gallery' ? '撤下' : '移出'}`, questioned: '已标记存疑' }[mode]}：${w.title}`);
       await reload();
     } catch (error) {
       $('.form-error', form).textContent = error.message;
@@ -416,7 +441,7 @@ function arenaSidebar(route, sub) {
   return `<aside class="workspace-sidebar" aria-label="竞技场工作台导航">
     <div class="sidebar-head"><a class="sidebar-brand" href="#/traffic">${LOGO}<span class="sidebar-copy"><b>偏见试验场</b><small>竞技场管理工作台</small></span></a>
       <button class="icon-btn sidebar-collapse" type="button" data-sidebar-collapse aria-label="${state.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}">${icon('panel')}</button></div>
-    <nav class="sidebar-nav">${ARENA_NAV.map(([group, items]) => `<div class="sidebar-group"><span class="sidebar-caption">${group}</span>${items.map(([id, label, glyph, href]) => `<a href="${href}" title="${label}" ${selected === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span class="sidebar-label">${label}</span>${id === 'review' && state.works ? `<i>${state.works.filter((w) => w.status === 'unverified').length}</i>` : ''}</a>`).join('')}</div>`).join('')}</nav>
+    <nav class="sidebar-nav">${ARENA_NAV.map(([group, items]) => `<div class="sidebar-group"><span class="sidebar-caption">${group}</span>${items.map(([id, label, glyph, href]) => `<a href="${href}" title="${label}" ${selected === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span class="sidebar-label">${label}</span>${id === 'review' && state.works ? `<i>${state.works.filter((w) => w.status !== 'questioned' && !faceOn(w)).length}</i>` : ''}</a>`).join('')}</div>`).join('')}</nav>
     <div class="sidebar-foot"><span>共享数据 · 双系统门面</span><small>竞技场 / 管理后台</small></div>
   </aside>`;
 }
@@ -445,31 +470,23 @@ function inboxPanel() {
   const cards = entries.map((entry) => {
     const form = state.inboxForms[entry.id] ??= {
       task: store.get('admin-inbox-task') ?? '', title: entry.suggest.title, summary: '',
-      modelId: '', modelName: entry.suggest.model, effort: '', publish: false, show_gallery: true, show_arena: false };
+      modelId: '', modelName: entry.suggest.model, effort: '' };
     const value = (name) => esc(String(form[name] ?? ''));
-    const checked = (name) => (form[name] ? 'checked' : '');
     return `<article class="inbox-card" data-inbox-id="${esc(entry.id)}">
       <div class="inbox-preview"><iframe src="${esc(entry.preview)}" sandbox="allow-scripts allow-pointer-lock" loading="lazy" title="预览「${esc(entry.name)}」"></iframe><a class="btn sm inbox-open" href="${esc(entry.preview)}" target="_blank" rel="noopener">新窗口打开 ${icon('arrow')}</a></div>
       <form class="inbox-form" novalidate>
         <p class="inbox-name">${icon('file')}<b>${esc(entry.name)}</b><span>${formatBytes(entry.size)}</span></p>
+        <label class="field"><span class="field-label">题目</span><select class="input" name="task" required><option value="">选择题目</option>${taskOptions(form.task)}</select></label>
         <div class="field-row">
-          <label class="field"><span class="field-label">题目</span><select class="input" name="task" required><option value="">选择题目</option>${taskOptions(form.task)}</select></label>
-          <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">不登记（用自由文本）</option>${modelOptions(form.modelId)}</select></label>
+          <label class="field"><span class="field-label">登记为模型<small>挂到模型档案，排行榜按模型记分</small></span><select class="input" name="modelId"><option value="">不登记（用自由文本）</option>${modelOptions(form.modelId)}</select></label>
+          <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${value('effort')}" placeholder="默认 / 未设置"></label>
         </div>
         <div class="field-row">
           <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${value('title')}"></label>
-          <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${value('modelName')}" placeholder="如 Claude 4.5"></label>
+          <label class="field"><span class="field-label">模型名称<small>展签显示的名字，选了档案会自动回填</small></span><input class="input" name="modelName" maxlength="60" value="${value('modelName')}" placeholder="如 Claude 4.5"></label>
         </div>
-        <div class="field-row">
-          <label class="field"><span class="field-label">摘要</span><input class="input" name="summary" maxlength="200" value="${value('summary')}"></label>
-          <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${value('effort')}" placeholder="默认 / 未设置"></label>
-        </div>
-        <div class="face-checks">
-          <label><input type="checkbox" name="publish" ${checked('publish')}> 登记后直接通过验证</label>
-          <label><input type="checkbox" name="show_gallery" ${checked('show_gallery')}> 展览馆显示</label>
-          <label><input type="checkbox" name="show_arena" ${checked('show_arena')}> 正式盲测</label>
-        </div>
-        <p class="fine">不勾选「直接通过验证」时，作品会登记为待核验，稍后在下方队列核验发布。</p>
+        <label class="field"><span class="field-label">摘要</span><input class="input" name="summary" maxlength="200" value="${value('summary')}"></label>
+        <p class="fine">登记只是入库，不决定展示：作品会同时出现在两边的审核队列——展览馆系统审「上不上展览馆」，竞技场系统审「进不进盲测」，两边各审一次。</p>
         <p class="form-error" role="alert"></p>
         <div class="actions"><button type="button" class="btn sm danger ghost" data-inbox-remove>${icon('trash')}移除</button><span class="spacer"></span><button class="btn sm primary" type="submit">${icon('check')}登记入库</button></div>
       </form>
@@ -509,9 +526,10 @@ async function inboxUpload(files) {
 }
 
 function reviewView(sub) {
-  const tab = Object.hasOwn(REVIEW_TABS, sub ?? '') ? sub : 'unverified';
+  const tab = Object.hasOwn(REVIEW_TABS, sub ?? '') ? sub : 'pending';
   const works = state.works ?? [];
-  const count = (status) => works.filter((w) => w.status === status).length;
+  const face = state.system;
+  const count = (kind) => works.filter((w) => kind === 'questioned' ? w.status === 'questioned' : kind === 'shown' ? faceOn(w, face) : !faceOn(w, face) && w.status !== 'questioned').length;
   const titles = new Map(works.map((w) => [w.id, w.title]));
   let list;
   if (tab === 'log') {
@@ -519,12 +537,16 @@ function reviewView(sub) {
       ? `<ol class="audit">${state.audit.map((row) => `<li><time>${formatTime(row.at)}</time><span class="audit-actor">${esc(row.actor)}</span><b>${esc(ACTIONS[row.action] ?? row.action)}</b><span class="audit-work">${row.work ? esc(titles.get(row.work) ?? `${row.work}（已删除）`) : ''}${row.detail ? ` · ${esc(row.detail)}` : ''}</span></li>`).join('')}</ol>`
       : '<p class="muted">还没有记录。</p>';
   } else {
-    const rows = works.filter((w) => w.status === tab).sort((a, b) => (tab === 'unverified' ? Date.parse(a.addedAt) - Date.parse(b.addedAt) : Date.parse(b.addedAt) - Date.parse(a.addedAt)));
+    const rows = works.filter((w) => tab === 'questioned' ? w.status === 'questioned' : tab === 'shown' ? faceOn(w, face) : !faceOn(w, face) && w.status !== 'questioned')
+      .sort((a, b) => (tab === 'pending' ? Date.parse(a.addedAt) - Date.parse(b.addedAt) : Date.parse(b.addedAt) - Date.parse(a.addedAt)));
     list = rows.length
       ? `<div class="work-list">${rows.map(workRow).join('')}</div>`
-      : `<div class="board-empty"><p class="board-empty-title">${tab === 'unverified' ? '没有等待核验的作品' : `没有${REVIEW_TABS[tab]}的投稿`}</p><p>${tab === 'unverified' ? '新的投稿会按提交顺序出现在这里。' : '馆藏作品由仓库收录流程管理，不在这里审核。'}</p></div>`;
+      : `<div class="board-empty"><p class="board-empty-title">${tab === 'pending' ? `没有等待${FACE_LABEL[face]}审核的作品` : tab === 'shown' ? `${FACE_LABEL[face]}还没有展示中的作品` : '没有存疑的投稿'}</p><p>${tab === 'pending' ? '新登记或新投稿的作品会出现在这里，审核决定它在本面的展示。' : tab === 'shown' ? `在本面审核通过的作品会展示在这里。` : '无法核实的作品标记存疑并写明原因。'}</p></div>`;
   }
-  return `${pageHero('审核管理', '审核', '核对每件投稿能否运行、是否符合题目、生成信息是否可信。通过的作品进入盲评并优先展示；无法核实的标记存疑并写明原因。', [['待核验', count('unverified')], ['已验证', count('verified')], ['存疑', count('questioned')]])}
+  const lead = face === 'gallery'
+    ? '决定哪些作品上展览馆展示；盲测的进出在竞技场系统里审，两边互不影响。'
+    : '决定哪些作品进入盲测；展览馆的上下架在展览馆系统里审，两边互不影响。';
+  return `${pageHero('审核管理', '审核', lead, [['待审', count('pending')], ['已展示', count('shown')], ['存疑', count('questioned')]])}
   ${inboxPanel()}
   <section class="block">
     <nav class="seg review-tabs" aria-label="审核分类">${Object.entries(REVIEW_TABS).map(([id, text]) => `<a href="#/review/${id}"${id === tab ? ' aria-current="page"' : ''}>${text}${id === 'log' ? '' : `<span>${count(id)}</span>`}</a>`).join('')}</nav>
@@ -532,38 +554,7 @@ function reviewView(sub) {
   </section>`;
 }
 
-// -- works tab --
 const WORKS_FILTERS = { all: '全部', unverified: '未验证', verified: '已验证', questioned: '存疑' };
-function worksView() {
-  const works = state.works ?? [];
-  const filter = state.worksFilter;
-  const rows = works.filter((w) => filter === 'all' || w.status === filter);
-  const table = rows.length
-    ? `<div class="table-wrap"><table class="board works-table">
-        <thead><tr><th class="c-title">作品</th><th>模型</th><th>档位</th><th>状态</th><th>投稿者</th><th>提交时间</th><th class="c-actions">操作</th></tr></thead>
-        <tbody>${rows.map((w) => `<tr data-status="${esc(w.status)}">
-          <td class="c-title"><b>${esc(w.title)}</b><small>${esc(taskTitle(w.task))}</small></td>
-          <td>${esc(w.modelName)}</td>
-          <td>${esc(w.effort || '—')}</td>
-          <td>${statusBadge(w.status, w.reason)}</td>
-          <td>${esc(w.owner ?? '已注销')}</td>
-          <td><time>${formatTime(w.addedAt)}</time></td>
-          <td class="c-actions"><div class="actions">
-            <button class="btn sm" data-review="${esc(w.id)}">审核</button>
-            ${w.status !== 'verified' && w.audience !== 'hidden' ? `<button class="btn sm primary" data-verify="${esc(w.id)}" title="通过验证">${icon('check')}通过</button>` : ''}
-            ${w.status !== 'questioned' ? `<button class="btn sm" data-question="${esc(w.id)}" title="标记存疑">${icon('alert')}存疑</button>` : ''}
-            <button class="icon-btn" data-delete="${esc(w.id)}" title="删除作品" aria-label="删除「${esc(w.title)}」">${icon('trash')}</button>
-          </div></td>
-        </tr>`).join('')}</tbody>
-      </table></div>`
-    : `<div class="board-empty"><p class="board-empty-title">没有${filter === 'all' ? '' : WORKS_FILTERS[filter]}投稿</p><p>投稿作品会显示在这里；馆藏作品由仓库收录流程管理。</p></div>`;
-  return `${pageHero('Works', '作品', '所有投稿作品的全景：按状态筛选，行内直接通过、存疑或删除。', [['投稿', works.length], ['待核验', works.filter((w) => w.status === 'unverified').length], ['已验证', works.filter((w) => w.status === 'verified').length]])}
-  <section class="block">
-    <div class="seg works-filter" role="group" aria-label="按状态筛选">${Object.entries(WORKS_FILTERS).map(([id, text]) => `<button type="button" data-filter="${id}" aria-pressed="${id === filter}">${text}</button>`).join('')}</div>
-    ${state.works === null ? '<p class="muted">正在载入…</p>' : table}
-  </section>`;
-}
-
 const faceLabel = () => state.system === 'gallery' ? '展览馆' : '竞技场';
 const workKey = (w) => `${encodeURIComponent(w.task)}/${encodeURIComponent(w.id)}`;
 function adminWorkRow(w, face = state.system) {
@@ -1026,8 +1017,26 @@ document.addEventListener('click', async (e) => {
     if (!work) return;
     const doneBusy = busy(verifyBtn, '正在通过…');
     try {
-      await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`, { method: 'POST', body: { status: 'verified' } });
-      toast(`已通过验证：${work.title}`);
+      // Quick approve: content verified + current face on; the other face keeps its state.
+      await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
+        { method: 'POST', body: { status: 'verified', [`show_${state.system}`]: true } });
+      toast(`已${state.system === 'gallery' ? '上展览馆' : '进盲测'}：${work.title}`);
+      await reload();
+    } catch (error) {
+      toast(error.message);
+      doneBusy();
+    }
+    return;
+  }
+  const withdrawBtn = e.target.closest('[data-withdraw]');
+  if (withdrawBtn) {
+    const work = state.works?.find((w) => w.id === withdrawBtn.dataset.withdraw);
+    if (!work) return;
+    const doneBusy = busy(withdrawBtn, '正在撤下…');
+    try {
+      await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
+        { method: 'POST', body: { status: work.status, [`show_${state.system}`]: false } });
+      toast(`已从${FACE_LABEL[state.system]}撤下：${work.title}`);
       await reload();
     } catch (error) {
       toast(error.message);
@@ -1091,6 +1100,13 @@ document.addEventListener('input', (e) => {
   if (!card || !form || !state.inboxForms[card.dataset.inboxId]) return;
   const stored = state.inboxForms[card.dataset.inboxId];
   if (e.target.name in stored) stored[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+  // Picking a catalog model back-fills the display name (editable afterwards).
+  if (e.target.name === 'modelId' && stored.modelId) {
+    const label = e.target.selectedOptions?.[0]?.textContent ?? '';
+    stored.modelName = label;
+    const nameInput = $('input[name="modelName"]', card);
+    if (nameInput) nameInput.value = label;
+  }
 });
 document.addEventListener('submit', async (e) => {
   if (e.target.classList?.contains('inbox-form')) {
@@ -1106,12 +1122,11 @@ document.addEventListener('submit', async (e) => {
     try {
       const data = await api('admin/inbox/register', { method: 'POST', body: {
         id, task: stored.task, title: stored.title, summary: stored.summary, modelId: stored.modelId || undefined,
-        modelName: stored.modelName, effort: stored.effort, publish: Boolean(stored.publish),
-        show_gallery: Boolean(stored.show_gallery), show_arena: Boolean(stored.show_arena) } });
+        modelName: stored.modelName, effort: stored.effort } });
       store.set('admin-inbox-task', stored.task);
       delete state.inboxForms[id];
       state.workCache.clear();
-      toast(`${stored.publish ? '已登记并发布' : '已登记为待核验'}：${data.work.title}`);
+      toast(`已入库，等两边审核：${data.work.title}`);
       await Promise.all([loadInbox(), loadReview()]);
       render({ soft: true });
     } catch (err) { error.textContent = err.message; done(); }
