@@ -247,8 +247,7 @@ select.input { appearance: none; padding-right: 32px; background-image: linear-g
 .gate .actions { margin-top: 4px; }
 
 /* ---- page hero --------------------------------------------------------------- */
-.page { width: min(100%, var(--wrap) + 64px); margin-inline: auto; padding: 0 32px 64px; animation: rise 0.5s var(--ease) both; }
-@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+.page { width: min(100%, var(--wrap) + 64px); margin-inline: auto; padding: 0 32px 64px; }
 .page-hero { padding-block: 48px 30px; }
 .eyebrow { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; color: var(--muted); font: 500 11.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; }
 .eyebrow-mark { width: 18px; height: 1px; background: var(--accent-text); }
@@ -584,14 +583,17 @@ dialog.review-sheet { width: min(1020px, calc(100% - 32px)); }
 .face-toggle.is-saving { opacity: .7; }
 .face-toggle.is-saving::after { content: ""; display: inline-block; width: 12px; height: 12px; margin-left: 6px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: busy-spin .7s linear infinite; }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
-.row-enter { animation: row-in 260ms var(--ease) both; }
-@keyframes row-in { from { opacity: .25; transform: translateY(5px); } }
+/* 行反馈用背景色闪白，不用 opacity/transform——后者同样会把行内文字提升为合成层，
+   动画结束降级时文字也会抖。 */
+.row-enter { animation: row-in 480ms var(--ease) both; }
+@keyframes row-in { from { background-color: var(--img-bg); } to { background-color: transparent; } }
 .world-enter .workspace-sidebar { animation: world-side 390ms var(--ease) both; }
 .world-enter .topbar { animation: world-top 390ms var(--ease) both; }
-.world-enter .page { animation: world-page 390ms var(--ease) both; }
+/* 注意：内容区 .page 不做透明度/位移动画——transform/opacity 动画会把整页文字提升为
+   GPU 合成层，动画结束降级时文字抗锯齿方式切换，全页文字会“抖一下”。换壳动效只给
+   侧栏与顶栏（文字少、抖动不可感知），内容区随壳瞬切即可。 */
 @keyframes world-side { from { opacity: .5; transform: translateX(-9px); } }
 @keyframes world-top { from { opacity: .55; transform: translateY(-7px); } }
-@keyframes world-page { from { opacity: .82; transform: translateY(7px); } }
 .admin-work-title .work-thumb { aspect-ratio: 1; background: var(--img-bg); }
 .admin-work-title .work-thumb img { background: var(--img-bg); }
 .work-results { min-height: 220px; }
