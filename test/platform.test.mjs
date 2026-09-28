@@ -341,11 +341,14 @@ describe('platform lifecycle', () => {
     assert.equal(upload.effort, 'High');
     assert.equal((await fetchContent(upload.scene)).status, 200);
     const boot = await call('bob', 'GET', '/api/bootstrap');
-    assert.equal(boot.data.arena.one.works, 2, 'unverified works stay out of blind comparisons');
+    assert.equal(boot.data.arena.one.works, 0, 'unverified uploads and unapproved curated works all stay out of blind comparisons');
     assert.equal(boot.data.works[0].checks, undefined, 'upload reports are private');
   });
 
   test('blind matches reveal nothing until the vote, and each pair counts once per voter', async () => {
+    // 精选馆藏默认不进正式盲测池：先在竞技场面逐件审批 a1/b1。
+    assert.equal((await call('root', 'POST', '/api/admin/works/one/a1/face-settings', { show_arena: true })).status, 200);
+    assert.equal((await call('root', 'POST', '/api/admin/works/one/b1/face-settings', { show_arena: true })).status, 200);
     const match = await call('alice', 'POST', '/api/arena/matches', { task: 'one' });
     assert.equal(match.status, 200);
     assert.deepEqual(Object.keys(match.data).sort(), ['a', 'b', 'counted', 'id', 'task']);

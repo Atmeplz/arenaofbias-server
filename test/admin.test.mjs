@@ -93,7 +93,7 @@ test('admin API merges curated and upload works, applies face settings, calibrat
   assert.equal(curatedSettings.status, 200);
   assert.deepEqual({ ...platform.db.prepare('SELECT show_gallery, show_arena FROM work_overrides WHERE work_id = ?').get('a') }, { show_gallery: 0, show_arena: 0 });
   list = await call('root', 'GET', '/api/admin/works?face=arena&show=off');
-  assert.equal(list.data.total, 2);
+  assert.equal(list.data.total, 3, 'curated works default to arena-off until approved');
   const framing = { width: 1440, height: 900, zoom: 1.2, offsetX: 0.1, offsetY: -0.2 };
   const camera = { position: [1, 2, 3], target: [0, 0, 0] };
   assert.equal((await call('root', 'POST', `/api/admin/works/one/${id}/calibration`, { face: 'gallery', calibration: { framing } })).status, 200);
@@ -132,6 +132,9 @@ test('editorial validates weights, traffic aggregates, and arena switches remove
   assert.equal(traffic.users.total, 2);
   assert.equal(traffic.users.new, 2);
   assert.equal((await call('root', 'GET', '/api/admin/traffic?days=91')).status, 400);
+  // 精选馆藏默认不进正式盲测池：先逐件审批 a/b。
+  await call('root', 'POST', '/api/admin/works/one/a/face-settings', { show_arena: true });
+  await call('root', 'POST', '/api/admin/works/one/b/face-settings', { show_arena: true });
   const match = await call('voter', 'POST', '/api/arena/matches', { task: 'one' });
   assert.equal(match.status, 200);
   assert.ok(!JSON.stringify(match.data).includes('模型甲'));

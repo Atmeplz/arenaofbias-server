@@ -266,21 +266,22 @@ function workRow(w) {
   const face = state.system;
   const quick = w.status === 'questioned' ? '' : faceOn(w, face)
     ? `<button class="btn sm" data-withdraw="${esc(w.id)}" title="本面撤下，不影响另一面">${icon('close')}撤下</button>`
-    : `<button class="btn sm primary" data-verify="${esc(w.id)}" title="内容核验通过并${face === 'gallery' ? '上展览馆' : '进入正式盲测'}">${icon('check')}${face === 'gallery' ? '上展览馆' : '进盲测'}</button>`;
+    : `<button class="btn sm primary" data-verify="${esc(w.id)}" title="${w.source === 'curated' ? '让这件馆藏作品' : '内容核验通过并'}${face === 'gallery' ? '上展览馆' : '进入正式盲测'}">${icon('check')}${face === 'gallery' ? '上展览馆' : '进盲测'}</button>`;
+  const meta = [taskTitle(w.task), w.source === 'curated' ? '精选馆藏' : esc(w.tool), formatDate(w.addedAt), w.owner ? `投稿者 ${esc(w.owner)}` : ''].filter(Boolean).join(' · ');
   return `<article class="work-row" data-status="${esc(w.status)}">
     ${thumb(w)}
     <div class="work-main">
       <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}<span class="badge">${esc(FACE_LABEL[face])}·${faceOn(w, face) ? '已展示' : '待审'}</span>${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未展示</span>' : ''}</p>
       <h3>${esc(w.title)}</h3>
-      <p class="work-meta">${esc(taskTitle(w.task))} · ${esc(w.tool)} · ${formatDate(w.addedAt)} · 投稿者 ${esc(w.owner ?? '已注销的用户')}</p>
+      <p class="work-meta">${meta}</p>
       ${w.reason ? `<p class="work-reason">${icon('alert')}<span>${esc(w.reason)}</span></p>` : ''}
     </div>
     <div class="work-side">
       <div class="actions">
-        <a class="btn sm" href="${esc(w.scene)}" target="_blank" rel="noopener">打开${icon('arrow')}</a>
+        ${w.scene ? `<a class="btn sm" href="${esc(w.scene)}" target="_blank" rel="noopener">打开${icon('arrow')}</a>` : ''}
         ${quick}
         <button class="btn sm primary" data-review="${esc(w.id)}">审核</button>
-        <button class="icon-btn" data-delete="${esc(w.id)}" title="删除作品" aria-label="删除「${esc(w.title)}」">${icon('trash')}</button>
+        ${w.source !== 'curated' ? `<button class="icon-btn" data-delete="${esc(w.id)}" title="删除作品" aria-label="删除「${esc(w.title)}」">${icon('trash')}</button>` : ''}
       </div>
     </div>
   </article>`;
@@ -299,7 +300,50 @@ function trialRows(trial) {
   return rows.map(([st, label, detail]) => `<li class="check is-${st}">${icon(st === 'ok' ? 'check' : st === 'fail' ? 'close' : 'alert')}<span><b>${esc(label)}</b>${esc(detail)}</span></li>`).join('');
 }
 
+// Curated works are repo-managed: reviewing one only decides the current face's flag.
+function openCuratedReview(w) {
+  const face = state.system;
+  const sheet = openDialog({
+    title: `${FACE_LABEL[face]}审核 · 精选馆藏`,
+    className: 'review-sheet',
+    body: `<div class="review solo">
+      <div class="review-facts">
+        <div class="review-head">${thumb(w)}<div><h3>${esc(w.title)}</h3><p class="work-model"><span class="badge">精选馆藏</span><span>${esc(taskTitle(w.task))}</span></p></div></div>
+        <dl class="facts">
+          <div><dt>声明的模型</dt><dd>${esc(w.modelName)}${w.vendor ? ` · ${esc(w.vendor)}` : ''}</dd></div>
+          <div><dt>推理档位</dt><dd>${esc(w.effort || '默认 / 未设置')}</dd></div>
+        </dl>
+        <p class="fine">馆藏作品的标题与信息由仓库收录流程管理，这里只决定它在${esc(FACE_LABEL[face])}的展示。</p>
+        <div class="face-decision">
+          <p class="face-state">${faceOn(w) ? `${FACE_LABEL[face]}：已${face === 'gallery' ? '展示' : '进正式盲测池'}` : `${FACE_LABEL[face]}：未${face === 'gallery' ? '展示' : '进盲测'}`}</p>
+          <p class="fine">本面动作只改${FACE_LABEL[face]}，另一面（${face === 'gallery' ? `盲测：${faceOn(w, 'arena') ? '已进' : '未进'}` : `展览馆：${faceOn(w, 'gallery') ? '已展示' : '未展示'}`}）保持不变。</p>
+          ${face === 'arena' ? '<label class="face-checks"><input type="checkbox" disabled> 娱乐盲测<small>待接线：接线后作品可进 Show1 娱乐面与老作品对打</small></label>' : ''}
+        </div>
+        <p class="form-error" role="alert"></p>
+        <div class="sheet-actions"><span class="spacer"></span>
+          ${faceOn(w)
+            ? `<button type="button" class="btn" data-face-decide="hide">从${FACE_LABEL[face]}${face === 'gallery' ? '撤下' : '移出'}</button>`
+            : `<button type="button" class="btn primary" data-face-decide="show">${icon('check')}${face === 'gallery' ? '通过并上展览馆' : '通过并进盲测'}</button>`}
+        </div>
+      </div>
+    </div>`,
+  });
+  sheet.el.addEventListener('click', async (e) => {
+    const decide = e.target.closest('[data-face-decide]');
+    if (!decide) return;
+    const mode = decide.dataset.faceDecide;
+    const doneBusy = busy(decide, '正在保存…');
+    try {
+      await api(`admin/works/${workKey(w)}/face-settings`, { method: 'POST', body: { [`show_${face}`]: mode === 'show' } });
+      sheet.close();
+      toast(`${mode === 'show' ? `已${face === 'gallery' ? '上展览馆' : '进盲测'}` : `已从${FACE_LABEL[face]}${face === 'gallery' ? '撤下' : '移出'}`}：${w.title}`);
+      await reload();
+    } catch (error) { $('.form-error', sheet.el).textContent = error.message; doneBusy(); }
+  });
+}
+
 function openReview(w) {
+  if (w.source === 'curated') return openCuratedReview(w);
   const face = state.system;
   const vendors = new Map();
   for (const model of state.data?.models ?? []) {
@@ -1065,9 +1109,14 @@ document.addEventListener('click', async (e) => {
     if (!work) return;
     const doneBusy = busy(verifyBtn, '正在通过…');
     try {
-      // Quick approve: content verified + current face on; the other face keeps its state.
-      await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
-        { method: 'POST', body: { status: 'verified', [`show_${state.system}`]: true } });
+      // Quick approve: current face on. Curated works go through face-settings
+      // (their content is repo-vetted); uploads also get content-verified here.
+      if (work.source === 'curated') {
+        await api(`admin/works/${workKey(work)}/face-settings`, { method: 'POST', body: { [`show_${state.system}`]: true } });
+      } else {
+        await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
+          { method: 'POST', body: { status: 'verified', [`show_${state.system}`]: true } });
+      }
       toast(`已${state.system === 'gallery' ? '上展览馆' : '进盲测'}：${work.title}`);
       await reload();
     } catch (error) {
@@ -1082,8 +1131,12 @@ document.addEventListener('click', async (e) => {
     if (!work) return;
     const doneBusy = busy(withdrawBtn, '正在撤下…');
     try {
-      await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
-        { method: 'POST', body: { status: work.status, [`show_${state.system}`]: false } });
+      if (work.source === 'curated') {
+        await api(`admin/works/${workKey(work)}/face-settings`, { method: 'POST', body: { [`show_${state.system}`]: false } });
+      } else {
+        await api(`works/${encodeURIComponent(work.task)}/${encodeURIComponent(work.id)}/review`,
+          { method: 'POST', body: { status: work.status, [`show_${state.system}`]: false } });
+      }
       toast(`已从${FACE_LABEL[state.system]}撤下：${work.title}`);
       await reload();
     } catch (error) {

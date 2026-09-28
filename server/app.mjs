@@ -217,7 +217,10 @@ export function createPlatform({ config, limits }) {
   });
   router.on('GET', '/api/review', (ctx) => {
     const admin = adminOnly(ctx);
-    return { works: publicList(library.uploads(), admin), audit: library.auditLog() };
+    // Per-face review covers both sides: uploads plus the curated collection (the
+    // other site's works), each waiting on its own face's flag.
+    const curated = catalog.tasks().flatMap((task) => [...task.works.values()]);
+    return { works: [...library.uploads(), ...curated].map((work) => library.adminWork(work)), audit: library.auditLog() };
   });
 
   // Account administration for the admin web app (the CLI in server/cli.mjs does the same).

@@ -62,6 +62,8 @@ test('a match keeps its original package and vote identity across a same-mtime s
     content = createServer(platform.handleContent).listen(0, '127.0.0.1');
     await new Promise((resolve) => content.once('listening', resolve));
     const user = platform.auth.register('voter', 'correct horse');
+    // 精选馆藏默认不进正式盲测池：先审批 a1/b1（等价于竞技场面的逐件通过）。
+    platform.db.prepare("INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at) VALUES ('one', 'a1', 1, 1, 'test', 0), ('one', 'b1', 1, 1, 'test', 0)").run();
     assert.equal(platform.arena.leaderboard().unranked.some((row) => row.key === 'm-a|'), true);
     const match = platform.arena.createMatch(user, 'one');
     const original = await contentGet(match.a);

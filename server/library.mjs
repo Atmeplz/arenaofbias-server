@@ -160,7 +160,8 @@ export function createLibrary({ db, catalog, config, limits }) {
     if (!work) return { show_gallery: false, show_arena: false };
     if (work.curated) {
       const row = q.override.get(work.taskId, work.id);
-      return { show_gallery: Boolean(row?.show_gallery ?? 1), show_arena: Boolean(row?.show_arena ?? 1) };
+      // 精选馆藏默认只在展览馆展示；进正式盲测池须在竞技场系统逐件审核通过。
+      return { show_gallery: Boolean(row?.show_gallery ?? 1), show_arena: Boolean(row?.show_arena ?? 0) };
     }
     return { show_gallery: work.showGallery, show_arena: work.showArena };
   };

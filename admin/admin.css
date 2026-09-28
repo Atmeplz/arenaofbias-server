@@ -659,3 +659,4 @@ dialog.review-sheet { width: min(1020px, calc(100% - 32px)); }
 
 /* 通用后台：仪表盘快捷入口 */
 .dashboard-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.review.solo { grid-template-columns: 1fr; }
