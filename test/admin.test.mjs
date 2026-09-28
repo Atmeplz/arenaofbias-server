@@ -11,7 +11,7 @@ import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 
 const html = '<!doctype html><html><head><title>作品</title></head><body><h1>作品</h1></body></html>';
 
-test('v9 backfills both switches from every v8 audience and reopens without data loss', () => {
+test('v9 backfills both switches from every v8 audience and reopens without data loss', async () => {
   const root = mkdtempSync(join(tmpdir(), 'admin-migration-'));
   const file = join(root, 'platform.db');
   try {
@@ -25,7 +25,7 @@ test('v9 backfills both switches from every v8 audience and reopens without data
     old.close();
     for (let i = 0; i < 2; i++) {
       const db = openDatabase(file);
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
       // v9 按 v8 受众回填两面；v10（分面审核新规）再把存量作品的展览馆面重置为待审。
       assert.deepEqual(db.prepare('SELECT id, show_gallery, show_arena FROM works ORDER BY id').all().map(({ id, show_gallery, show_arena }) => [id, show_gallery, show_arena]), [
         ['both', 0, 1], ['hidden', 0, 0], ['show1', 0, 1], ['show2', 0, 0],
@@ -33,7 +33,13 @@ test('v9 backfills both switches from every v8 audience and reopens without data
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM works').get().n, 4);
       db.close();
     }
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    // Windows 上 node:sqlite 做过 ALTER TABLE 后目录句柄偶尔迟放，清不掉就留给系统清。
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { rmSync(root, { recursive: true, force: true }); break; }
+      catch (error) { if (error.code !== 'EPERM' || attempt === 4) { if (error.code !== 'EPERM') throw error; } else await new Promise((done) => setTimeout(done, 400)); }
+    }
+  }
 });
 
 async function withPlatform(run) {

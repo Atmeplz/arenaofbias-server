@@ -79,6 +79,7 @@ export function createLibrary({ db, catalog, config, limits }) {
     arenaCalibration: db.prepare('UPDATE works SET calibration_arena = ?, updated_at = ? WHERE id = ?'),
     faceSettings: db.prepare('UPDATE works SET show_gallery = ?, show_arena = ?, audience = ?, updated_at = ? WHERE id = ?'),
     meta: db.prepare('UPDATE works SET title = ?, summary = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?, updated_at = ? WHERE id = ?'),
+    curatedAs: db.prepare('UPDATE works SET curated_as = ?, updated_at = ? WHERE id = ?'),
     votesOfWork: db.prepare('SELECT COUNT(*) AS n FROM votes WHERE task_id = ? AND (a_work = ? OR b_work = ?)'),
     override: db.prepare('SELECT * FROM work_overrides WHERE task_id = ? AND work_id = ?'),
     setOverride: db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
@@ -107,6 +108,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       audience: row.audience,
       showGallery: Boolean(row.show_gallery),
       showArena: Boolean(row.show_arena),
+      curatedAs: row.curated_as ?? null,
       calibrationArena: row.calibration_arena ? JSON.parse(row.calibration_arena) : null,
       reason: row.status_reason,
       title: row.title,
@@ -166,7 +168,7 @@ export function createLibrary({ db, catalog, config, limits }) {
     return { show_gallery: work.showGallery, show_arena: work.showArena };
   };
   const visibleTo = (work, site = 'show2') => Boolean(work && (site === 'show1' ? flagsOf(work).show_arena : flagsOf(work).show_gallery));
-  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir && visibleTo(work, 'show1'));
+  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir && !work.curatedAs && visibleTo(work, 'show1'));
   const isInteractive = (work) => Boolean(work && work.status !== 'questioned' &&
     (visibleTo(work, 'show1') || visibleTo(work, 'show2')));
 
@@ -259,7 +261,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       return q.works.all().map(fromRow);
     },
     published(site) {
-      return q.works.all().map(fromRow).filter((work) => work.status === 'verified' && visibleTo(work, site));
+      return q.works.all().map(fromRow).filter((work) => !work.curatedAs && work.status === 'verified' && visibleTo(work, site));
     },
     uploadsOf(userId) {
       return q.worksOfOwner.all(userId).map(fromRow);
@@ -302,6 +304,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       const override = work.curated ? q.override.get(work.taskId, work.id) : null;
       return {
         ...this.toPublic(work, { role: 'admin' }), source: work.curated ? 'curated' : 'upload',
+        ...(work.curated ? {} : { curatedAs: work.curatedAs ?? null }),
         ...flags, calibration_gallery: work.curated ? (override?.calibration_gallery ? JSON.parse(override.calibration_gallery) : null) : work.trial.calibration ?? null,
         calibration_arena: work.curated ? (override?.calibration_arena ? JSON.parse(override.calibration_arena) : null) : work.calibrationArena,
         has_calibration_gallery: Boolean(work.curated ? override?.calibration_gallery : work.trial.calibration),
@@ -468,6 +471,11 @@ export function createLibrary({ db, catalog, config, limits }) {
       const work = upload(draft.task_id, id);
       audit(user, 'submit', work, `${work.modelName}${work.effort ? ` · ${work.effort}` : ''}`);
       return work;
+    },
+
+    markCurated(admin, work, curatedId) {
+      q.curatedAs.run(curatedId, Date.now(), work.id);
+      audit(admin, 'curate', work, `收录为馆藏 ${curatedId}`);
     },
 
     setMeta(admin, taskId, id, body) {

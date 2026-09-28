@@ -16,6 +16,7 @@ import {
 import { createLibrary } from './library.mjs';
 import { createAdmin } from './admin.mjs';
 import { createInbox } from './inbox.mjs';
+import { createCurator } from './curate.mjs';
 import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
 import { registerShow1Compat } from './show1compat.mjs';
@@ -35,6 +36,7 @@ export function createPlatform({ config, limits }) {
   const library = createLibrary({ db, catalog, config, limits });
   const adminService = createAdmin({ db, catalog, library });
   const inbox = createInbox({ library, config, limits });
+  const curator = createCurator({ db, catalog, library, config });
   const comments = createComments(db, library);
   const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
@@ -89,7 +91,7 @@ export function createPlatform({ config, limits }) {
         emojis: EMOJIS,
         limits: { uploadBytes: limits.uploadBytes, coverBytes: limits.coverBytes, pendingPerUser: limits.pendingPerUser, provisionalGames: limits.provisionalGames },
       },
-      works: publicList(uploads.filter((work) => library.visibleTo(work, 'show2')), user),
+      works: publicList(uploads.filter((work) => !work.curatedAs && library.visibleTo(work, 'show2')), user),
       questions: questions.all(),
       reactions: library.reactionSummary(user),
       arena: Object.fromEntries(catalog.tasks().map((task) => [task.id, { ...arena.poolStats(task.id), uploads: task.acceptsUploads }])),
@@ -220,7 +222,7 @@ export function createPlatform({ config, limits }) {
     // Per-face review covers both sides: uploads plus the curated collection (the
     // other site's works), each waiting on its own face's flag.
     const curated = catalog.tasks().flatMap((task) => [...task.works.values()]);
-    return { works: [...library.uploads(), ...curated].map((work) => library.adminWork(work)), audit: library.auditLog() };
+    return { works: [...library.uploads().filter((work) => !work.curatedAs), ...curated].map((work) => library.adminWork(work)), audit: library.auditLog() };
   });
 
   // Account administration for the admin web app (the CLI in server/cli.mjs does the same).
@@ -322,6 +324,14 @@ export function createPlatform({ config, limits }) {
     const admin = adminOnly(ctx);
     limit.write(admin.id);
     return inbox.remove(admin, ctx.url.searchParams.get('id') ?? '');
+  });
+  // 收录为馆藏：打包成 intake 分支推到 arenaofbias-data，人工收尾后正式发布。
+  router.on('POST', '/api/admin/works/:task/:id/curate', (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const result = curator.promote(admin, ctx.params.task, ctx.params.id);
+    arena.invalidate();
+    return result;
   });
   // Inline edits (title/summary/model) from the works table; curated works stay repo-managed.
   router.on('POST', '/api/admin/works/:task/:id/meta', async (ctx) => {

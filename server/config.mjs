@@ -33,6 +33,8 @@ export const config = {
   // Headless screenshots of submitted works (Playwright + a local Chrome); off with CAPTURE=0.
   capture: env.CAPTURE !== '0',
   captureChannel: env.CAPTURE_BROWSER ?? 'chrome',
+  // 「收录为馆藏」用的 arenaofbias-data 本地克隆（main 分支，部署钥写权限）。
+  curateRepoDir: env.CURATE_REPO_DIR || '/root/arenaofbias-data',
   secureCookies: env.COOKIE_SECURE === '1',
   cookieSameSite: env.COOKIE_SAME_SITE || 'Lax',
   trustProxy: env.TRUST_PROXY === '1',
