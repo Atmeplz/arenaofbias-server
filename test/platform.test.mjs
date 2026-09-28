@@ -337,7 +337,7 @@ describe('platform lifecycle', () => {
     assert.equal(submitted.status, 200);
     upload = submitted.data.work;
     assert.equal(upload.status, 'unverified');
-    assert.deepEqual([...Object.values(platform.db.prepare('SELECT show_gallery, show_arena FROM works WHERE id = ?').get(upload.id))], [1, 1]);
+    assert.deepEqual([...Object.values(platform.db.prepare('SELECT show_gallery, show_arena FROM works WHERE id = ?').get(upload.id))], [1, 0], '新投稿默认展览馆开、竞技场关');
     assert.equal(upload.effort, 'High');
     assert.equal((await fetchContent(upload.scene)).status, 200);
     const boot = await call('bob', 'GET', '/api/bootstrap');
@@ -366,7 +366,8 @@ describe('platform lifecycle', () => {
 
   test('review moves uploads into the arena; questioned works stop counting and interacting', async () => {
     assert.equal((await call('alice', 'POST', `/api/works/one/${upload.id}/review`, { status: 'verified' })).status, 403);
-    assert.equal((await call('root', 'POST', `/api/works/one/${upload.id}/review`, { status: 'verified' })).status, 200);
+    // 裸审核 = 默认门面（展览馆开、竞技场关）；显式开竞技场才进配对池。
+    assert.equal((await call('root', 'POST', `/api/works/one/${upload.id}/review`, { status: 'verified', show_gallery: true, show_arena: true })).status, 200);
     assert.equal((await call('bob', 'GET', '/api/bootstrap')).data.arena.one.entries, 3);
 
     // Alice never meets her own work; Bob may.

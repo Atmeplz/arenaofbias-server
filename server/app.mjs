@@ -287,7 +287,7 @@ export function createPlatform({ config, limits }) {
       throw error;
     }
     const work = library.review(admin, task, submitted.id, { status: 'verified',
-      show_gallery: gallery === null ? true : gallery === '1', show_arena: arenaFace === null ? true : arenaFace === '1' });
+      show_gallery: gallery === null ? true : gallery === '1', show_arena: arenaFace === null ? false : arenaFace === '1' });
     capturer.enqueue(work);
     arena.invalidate();
     return { work: library.adminWork(work) };

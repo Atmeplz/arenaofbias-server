@@ -69,8 +69,8 @@ export function createLibrary({ db, catalog, config, limits }) {
     worksOfOwner: db.prepare(`${WORK} WHERE works.owner_id = ? AND works.deleted_at IS NULL ORDER BY works.created_at DESC`),
     pendingOf: db.prepare("SELECT COUNT(*) AS n FROM works WHERE owner_id = ? AND status = 'unverified' AND deleted_at IS NULL"),
     insertWork: db.prepare(`INSERT INTO works (id, task_id, owner_id, title, summary, model_id, model_name, vendor, effort, tool, note, content_key,
-      source_name, root, entry, file_count, bytes, digest, checks, trial, cover, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      source_name, root, entry, file_count, bytes, digest, checks, trial, cover, created_at, updated_at, show_gallery, show_arena)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)`),
     review: db.prepare(`UPDATE works SET status = ?, status_reason = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?,
       audience = ?, show_gallery = ?, show_arena = ?, title = ?, summary = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
     remove: db.prepare('UPDATE works SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?'),
