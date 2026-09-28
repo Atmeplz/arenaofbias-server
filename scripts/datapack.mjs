@@ -1,5 +1,5 @@
 // Install immutable releases, switch the current symlink, or inspect expiry-based cleanup.
-import { existsSync, readFileSync, readdirSync, realpathSync, lstatSync, mkdirSync, symlinkSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, lstatSync, mkdirSync, symlinkSync, renameSync, rmSync, rmdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -25,9 +25,15 @@ if (command === 'fetch') {
   if (existsSync(current) && !lstatSync(current).isSymbolicLink()) throw new Error('DIST_DIR must be a symlink; existing directories are never replaced');
   const pending = `${current}.next-${process.pid}`;
   symlinkSync(target, pending, process.platform === 'win32' ? 'junction' : 'dir');
-  try { renameSync(pending, current); }
+  // Windows 上 rename 无法覆盖既有 junction，且 rmSync 会把 junction 当目录报 EISDIR；
+  // junction 要用 rmdir 摘除（只删链接、不动目标）。代价：Windows 上切换非原子。
+  const unlinkLink = (path) => (process.platform === 'win32' ? rmdirSync(path) : rmSync(path));
+  try {
+    if (process.platform === 'win32' && existsSync(current)) rmdirSync(current);
+    renameSync(pending, current);
+  }
   catch (error) {
-    rmSync(pending);
+    unlinkLink(pending);
     throw new Error(`Cannot atomically switch DIST_DIR on this filesystem; current release was kept. Use a supported symlink deployment or stop the service before a manual switch. ${error.message}`);
   }
   console.log(`Current release: ${pin.commit}`);
