@@ -523,7 +523,7 @@ dialog.review-sheet { width: min(1020px, calc(100% - 32px)); }
   --mono: "Cascadia Mono", Consolas, "SFMono-Regular", monospace;
 }
 :root[data-system="arena"][data-theme="light"] body { background: var(--bg); }
-:root[data-system="arena"] body,
+/* body 背景随换壳瞬切，不参与过渡——新旧外壳节奏一致才不会闪。 */
 :root[data-system="arena"] .workspace-sidebar,
 :root[data-system="arena"] .topbar,
 :root[data-system="arena"] .system-switch,
@@ -591,7 +591,7 @@ dialog.review-sheet { width: min(1020px, calc(100% - 32px)); }
 .world-enter .page { animation: world-page 390ms var(--ease) both; }
 @keyframes world-side { from { opacity: .5; transform: translateX(-9px); } }
 @keyframes world-top { from { opacity: .55; transform: translateY(-7px); } }
-@keyframes world-page { from { opacity: .35; transform: translateY(12px); } }
+@keyframes world-page { from { opacity: .82; transform: translateY(7px); } }
 .admin-work-title .work-thumb { aspect-ratio: 1; background: var(--img-bg); }
 .admin-work-title .work-thumb img { background: var(--img-bg); }
 .work-results { min-height: 220px; }

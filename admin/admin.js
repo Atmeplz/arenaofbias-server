@@ -801,10 +801,17 @@ function render({ soft = false, world = false } = {}) {
   const sameShell = app().dataset.shell === shellKey && currentMain;
   const workSignature = route === 'works' ? `${state.workKey}:${state.workLoading}:${state.workTotal}:${JSON.stringify(state.adminWorks)}:${state.error}` : '';
   if (!sameShell) {
+    const prevRoute = String(app().dataset.shell ?? '').split('/')[1];
     app().dataset.shell = shellKey;
-    app().innerHTML = state.system === 'arena'
+    const template = document.createElement('div');
+    template.innerHTML = state.system === 'arena'
       ? `<div class="workspace ${state.sidebarCollapsed ? 'is-collapsed' : ''}">${arenaSidebar(route, sub)}<div class="workspace-content">${topbar(route)}<main class="page">${content}</main></div></div>`
       : `${topbar(route)}<main class="page">${content}</main>`;
+    // 同路由且渲染内容不变时移植现有内容节点：已解码的图片和滚动位置原样保留，消除整表闪动。
+    // （作品表两边列不同、必须重建；流量/用户/审核等内容与系统无关，走移植。）
+    const freshMain = $('main.page', template);
+    if (freshMain && currentMain && prevRoute === route && renderedContent === content) freshMain.replaceWith(currentMain);
+    app().replaceChildren(...template.childNodes);
     rowSignatures.clear();
     if (route === 'works' && !state.workLoading) state.adminWorks.forEach((w) => rowSignatures.set(`${w.task}/${w.id}`, JSON.stringify(w)));
     renderedWorkSignature = workSignature;
