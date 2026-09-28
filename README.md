@@ -41,7 +41,7 @@ npm start
 
 开发包的 `bootstrap.datapack` 为 `null`，两端通过原始 `data.json` 的 `catalogDigest` 核对，不能冒认固定版本。数据格式和前端版本校验见 [API 契约](docs/api-contract.md)。
 
-新投票保存对局时的模型/档位与计分 key；标签更新不自动改变历史归属。管理员可运行 `npm run correct:vote -- <管理员> <投票ID> <a或b> <更正JSON文件> <原因>`；JSON 只允许 `modelId/modelName/vendor/effort`。更正单独保存，原始快照不变，并写审计。没有历史身份快照的 legacy 票不能凭当前标签冒充原始归属。
+新投票保存对局时的模型/档位与计分 key；标签更新不自动改变历史归属。管理员可运行 `npm run correct:vote -- <管理员> <投票ID> <a或b> <更正JSON文件> <原因>`；JSON 只允许 `modelId/modelName/vendor/effort`。更正单独保存，原始快照不变，并写审计。没有身份快照的 legacy 票（只可能来自迁移前的测试数据）不参与计分，也不能更正。
 
 ## 环境变量（server/config.mjs）
 
@@ -100,4 +100,4 @@ npm run check
 npm test    # API、迁移、版本切换、投票快照、更正审计及清理保留规则
 ```
 
-后端功能提交为本地 `51eb3cb`（`codex/gallery-integration`），配套画廊前端功能提交为 `1ee5dae`（`codex/backend-datapack-integration`）。功能提交前 19 项测试通过；跨端口真实浏览器联调也已覆盖登录/刷新、题目、昵称、HTML 投稿、审核、盲评、榜单及个人统计。公网 HTTPS、跨站 Cookie、自动截图、真机和全部原作交互尚未验证；这不等同于全站交互验证。上述分支均未 push。
+后端功能提交为本地 `51eb3cb`（`gallery-integration`），配套画廊前端功能提交为 `1ee5dae`（`backend-datapack-integration`）。功能提交前 19 项测试通过；跨端口真实浏览器联调也已覆盖登录/刷新、题目、昵称、HTML 投稿、审核、盲评、榜单及个人统计。公网 HTTPS、跨站 Cookie、自动截图、真机和全部原作交互尚未验证；这不等同于全站交互验证。上述分支均未 push。

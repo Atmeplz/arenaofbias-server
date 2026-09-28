@@ -1,6 +1,6 @@
 # 2026-09-28 · 接入独立画廊 · wsnxxxs
 
-- 负责人：wsnxxxs ｜ 执行 AI：GPT-6 Sol / Codex desktop（后端子 agent）
+- 负责人：wsnxxxs ｜ 执行 AI：GPT-6 Sol（后端子 agent）
 
 ## 本轮目标
 
@@ -12,7 +12,7 @@
 - `POST /api/questions`，`bootstrap.questions`，`GET /api/me` 的本人题目/活跃热图/收到表情，`PATCH /api/me` 与画廊现有响应保持一致。
 - `SITE_ORIGINS` 提供完整 origin 精确匹配的凭据 CORS、API 写请求许可与内容嵌入许可；API 支持 OPTIONS 与 Content-Type 预检，可信来源的错误响应也携带 CORS 头。
 - 新增 `COOKIE_SAME_SITE=Lax|Strict|None`，None 必须同时启用 Secure；登录与登出保持相同策略。投稿媒体继续返回 `media/...`，前端按后端站点根解析，内容与对战地址继续返回完整令牌子域 URL。
-- README、API 契约与 HANDOFF 同步；工作分支 `codex/gallery-integration`。
+- README、API 契约与 HANDOFF 同步；工作分支 `gallery-integration`。
 
 ## 验证
 
@@ -37,4 +37,4 @@
 
 ## 补充验收（2026-09-28）
 
-主agent完成localhost:4175前端接5190 API / 5191作品源联调：浏览器登录并刷新保留会话、昵称PATCH、创建题目、HTML上传/沙盒交互/投稿、活跃统计、审核存疑、真实Boeing馆藏盲评投票揭晓与榜单更新均通过。桌面及390px题库目检通过，正常联调console未见错误。关闭后端后静态前端恢复5题83份。测试数据位于画廊output/backend-integration-data；旧.data未触碰，本轮服务已停止。未验证公网HTTPS/跨站Cookie策略/真机/自动截图/全部原作交互。前端分支codex/backend-datapack-integration，配套使用，未push。
+主agent完成localhost:4175前端接5190 API / 5191作品源联调：浏览器登录并刷新保留会话、昵称PATCH、创建题目、HTML上传/沙盒交互/投稿、活跃统计、审核存疑、真实Boeing馆藏盲评投票揭晓与榜单更新均通过。桌面及390px题库目检通过，正常联调console未见错误。关闭后端后静态前端恢复5题83份。测试数据位于画廊output/backend-integration-data；旧.data未触碰，本轮服务已停止。未验证公网HTTPS/跨站Cookie策略/真机/自动截图/全部原作交互。前端分支backend-datapack-integration，配套使用，未push。

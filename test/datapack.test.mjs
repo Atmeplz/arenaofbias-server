@@ -91,6 +91,7 @@ test('a match keeps its original package and vote identity across a same-mtime s
     assert.equal(vote.identity_source, 'snapshot');
     const identities = [JSON.parse(vote.a_identity), JSON.parse(vote.b_identity)];
     assert.equal(identities.find((side) => side.id === 'a1').configKey, 'm-a|');
+    assert.ok(identities.every((side) => /^[0-9a-f]{64}$/.test(side.digest)));
     const board = platform.arena.leaderboard({ task: 'one' });
     assert.ok(board.rows.some((entry) => entry.key === 'm-a|' && entry.modelName === 'Model a'));
     assert.ok(!board.rows.some((entry) => entry.key === 'm-new|'));

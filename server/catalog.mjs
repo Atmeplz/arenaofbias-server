@@ -1,8 +1,9 @@
 // Curated archive snapshots are bound to the real directory behind DIST_DIR.
 // Deployments keep each published directory immutable while matches use it.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fail } from './http.mjs';
 
 export const effortKey = (effort) => String(effort ?? '').normalize('NFKC').trim().toLowerCase();
 export const modelKey = (work) => work.modelId ?? `x:${work.modelName.normalize('NFKC').trim().toLowerCase()}`;
@@ -38,6 +39,16 @@ function readSnapshot(root) {
       }];
     })),
   }]));
+  // Entry-page digests identify the exact curated content a vote saw; computed once per work.
+  const entryDigests = new Map();
+  const entryDigest = (work) => {
+    const key = `${work.taskId}/${work.id}`;
+    if (!entryDigests.has(key)) {
+      const entry = work.dir && join(work.dir, 'index.html');
+      entryDigests.set(key, entry && existsSync(entry) ? createHash('sha256').update(readFileSync(entry)).digest('hex') : null);
+    }
+    return entryDigests.get(key);
+  };
   let digests;
   return {
     root, version, commit, catalogDigest, schemaVersion: data.schemaVersion ?? 1,
@@ -49,15 +60,16 @@ function readSnapshot(root) {
     models() { return [...models.values()]; },
     work(taskId, id) { return tasks.get(taskId)?.works.get(id) ?? null; },
     works(taskId) { return [...(tasks.get(taskId)?.works.values() ?? [])]; },
-    duplicateOf(entryDigest) {
+    entryDigest,
+    duplicateOf(digest) {
       if (!digests) {
         digests = new Map();
         for (const task of tasks.values()) for (const work of task.works.values()) {
-          const entry = work.dir && join(work.dir, 'index.html');
-          if (entry && existsSync(entry)) digests.set(createHash('sha256').update(readFileSync(entry)).digest('hex'), work);
+          const value = entryDigest(work);
+          if (value) digests.set(value, work);
         }
       }
-      return digests.get(entryDigest) ?? null;
+      return digests.get(digest) ?? null;
     },
   };
 }
@@ -65,26 +77,45 @@ function readSnapshot(root) {
 export function createCatalog(dist, questions = null) {
   let current = null;
   const snapshots = new Map();
+  let devStat = '', devRevision = '';
   function refresh() {
     const root = realpathSync(dist);
     const sourceFile = join(root, '.datapack-source.json');
     const source = existsSync(sourceFile) ? JSON.parse(readFileSync(sourceFile, 'utf8')) : null;
-    // A versioned directory is immutable. Unversioned development data is hashed
-    // so edits are observed even when data.json's mtime is unchanged.
-    const revision = source?.source === 'github' ? `${source.repo}|${source.commit}`
-      : `dev:${createHash('sha256').update(readFileSync(join(root, 'data.json'))).digest('hex')}`;
+    // A versioned directory is immutable. Unversioned development data is hashed so edits
+    // are observed even when data.json's mtime is unchanged; ctime changes on every write,
+    // so the hash is only recomputed when the file's stat changes.
+    let revision;
+    if (source?.source === 'github') revision = `${source.repo}|${source.commit}`;
+    else {
+      const file = join(root, 'data.json');
+      const stat = statSync(file);
+      const key = `${file}|${stat.ino}|${stat.size}|${stat.mtimeMs}|${stat.ctimeMs}`;
+      if (key !== devStat) {
+        devStat = key;
+        devRevision = `dev:${createHash('sha256').update(readFileSync(file)).digest('hex')}`;
+      }
+      revision = devRevision;
+    }
     if (!current || current.root !== root || current.revision !== revision) {
       const snapshot = readSnapshot(root);
       snapshot.revision = revision;
       current = snapshot;
       snapshots.set(root, snapshot);
+      // Pruned release directories no longer serve anything; drop their snapshots.
+      for (const key of snapshots.keys()) if (key !== root && !existsSync(join(key, 'data.json'))) snapshots.delete(key);
     }
     return current;
   }
   return {
     refresh, snapshot: refresh,
+    // The package a match was created with. A match without one, or whose release has been
+    // pruned, can no longer be served or scored.
     at(root) {
-      if (!root) return refresh(); // Pre-migration matches have no recorded version.
+      if (!root || !existsSync(join(root, 'data.json'))) {
+        if (root) snapshots.delete(root);
+        fail(410, '这一组已经失效，请开始新的一组');
+      }
       if (!snapshots.has(root)) snapshots.set(root, readSnapshot(root));
       return snapshots.get(root);
     },

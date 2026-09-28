@@ -17,8 +17,9 @@ import { rankEntries } from './ranking.mjs';
 const MATCH = { tierWidth: 150, sameTierRate: 0.9, blowoutGap: 400, rerolls: 2 };
 export const pairKey = (taskId, a, b) => `${taskId}:${[a, b].sort().join('+')}`;
 const token = () => `m${randomBytes(16).toString('hex')}`;
-const identityOf = (work) => ({
-  taskId: work.taskId, id: work.id, curated: work.curated,
+// `digest` pins the exact content: the entry page of a curated work, the upload digest otherwise.
+const identityOf = (work, digest = work.digest ?? null) => ({
+  taskId: work.taskId, id: work.id, curated: work.curated, digest,
   title: work.title, modelId: work.modelId, modelName: work.modelName,
   vendor: work.vendor, effort: work.effort, effortKey: effortKey(work.effort),
   modelKey: modelKey(work), configKey: entityKey(work), ownerId: work.ownerId,
@@ -51,6 +52,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
 
   // Eligibility follows current moderation/catalog membership; identity and score keys
   // come from the vote's saved snapshot and never drift with later label edits.
+  // Votes without a snapshot (pre-snapshot test data) are not scored.
   function countedVotes(taskId, snapshot = null) {
     const works = new Map();
     const lookup = (task, id) => {
@@ -63,11 +65,12 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     };
     const votes = [];
     for (const row of taskId ? q.votesOfTask.all(taskId) : q.votes.all()) {
+      if (!row.a_identity || !row.b_identity) continue;
       const a = lookup(row.task_id, row.a_work);
       const b = lookup(row.task_id, row.b_work);
       if (a && b) votes.push({
-        a: fromIdentity(row.a_correction) ?? fromIdentity(row.a_identity) ?? a,
-        b: fromIdentity(row.b_correction) ?? fromIdentity(row.b_identity) ?? b,
+        a: fromIdentity(row.a_correction) ?? fromIdentity(row.a_identity),
+        b: fromIdentity(row.b_correction) ?? fromIdentity(row.b_identity),
         choice: row.choice, userId: row.user_id ?? `vote:${row.id}`,
       });
     }
@@ -196,7 +199,8 @@ export function createArena({ db, catalog, library, limits, random = Math.random
       const now = Date.now();
       const tokens = [token(), token()];
       q.insertMatch.run(id, user?.id ?? null, taskId, a.id, b.id, tokens[0], tokens[1], now, now + limits.matchTtl,
-        snapshot.root, snapshot.version, JSON.stringify(identityOf(a)), JSON.stringify(identityOf(b)));
+        snapshot.root, snapshot.version, JSON.stringify(identityOf(a, a.curated ? snapshot.entryDigest(a) : a.digest)),
+        JSON.stringify(identityOf(b, b.curated ? snapshot.entryDigest(b) : b.digest)));
       return {
         id,
         task: taskId,
@@ -208,15 +212,15 @@ export function createArena({ db, catalog, library, limits, random = Math.random
 
     vote(user, matchId, choice) {
       const match = q.match.get(String(matchId ?? ''));
-      if (!match || match.expires_at <= Date.now() || (match.user_id && match.user_id !== user?.id)) fail(404, '这一组已经失效，请开始新的一组');
+      if (!match || match.expires_at <= Date.now() || (match.user_id && match.user_id !== user?.id)
+        || !match.a_identity || !match.b_identity) fail(404, '这一组已经失效，请开始新的一组');
       if (match.choice) fail(409, '这一组已经提交过了');
       if (!['a', 'b', 'tie', 'skip'].includes(choice)) fail(400, '选择无效');
       const snapshot = catalog.at(match.datapack_root);
       const a = library.work(match.task_id, match.a_work, snapshot);
       const b = library.work(match.task_id, match.b_work, snapshot);
-      const isLegacy = !match.a_identity || !match.b_identity;
-      const aIdentity = fromIdentity(match.a_identity) ?? (a && identityOf(a));
-      const bIdentity = fromIdentity(match.b_identity) ?? (b && identityOf(b));
+      const aIdentity = fromIdentity(match.a_identity);
+      const bIdentity = fromIdentity(match.b_identity);
       let counted = false;
       let reason = choice === 'skip' ? 'skipped' : '';
       transaction(db, () => {
@@ -224,17 +228,17 @@ export function createArena({ db, catalog, library, limits, random = Math.random
         if (choice === 'skip') return;
         if (!user) { reason = 'anonymous'; return; }
         if (!library.isEligible(library.work(match.task_id, match.a_work)) || !library.isEligible(library.work(match.task_id, match.b_work))) { reason = 'changed'; return; }
-        if (aIdentity?.ownerId === user.id || bIdentity?.ownerId === user.id) { reason = 'own'; return; }
+        if (aIdentity.ownerId === user.id || bIdentity.ownerId === user.id) { reason = 'own'; return; }
         const key = pairKey(match.task_id, match.a_work, match.b_work);
         if (q.votedPair.get(user.id, key)) { reason = 'duplicate'; return; }
         q.insertVote.run(randomBytes(12).toString('hex'), match.id, user.id, match.task_id, match.a_work, match.b_work, key, choice, Date.now(),
-          isLegacy ? null : JSON.stringify(aIdentity), isLegacy ? null : JSON.stringify(bIdentity), isLegacy ? 'legacy' : 'snapshot');
+          match.a_identity, match.b_identity, 'snapshot');
         counted = true;
       });
       if (counted) invalidate();
       const reveal = (work, identity) => work ? {
         ...library.toPublic(work, user),
-        ...(identity ? { title: identity.title, model: identity.modelId, modelName: identity.modelName, vendor: identity.vendor, effort: identity.effort } : {}),
+        title: identity.title, model: identity.modelId, modelName: identity.modelName, vendor: identity.vendor, effort: identity.effort,
       } : null;
       return { choice, counted, reason, a: reveal(a, aIdentity), b: reveal(b, bIdentity) };
     },
@@ -242,8 +246,10 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     // The work behind a match token, for the content server.
     workForToken(key) {
       const match = q.matchByToken.get(key, key, Date.now());
-      if (!match) return null;
-      return library.work(match.task_id, match.a_token === key ? match.a_work : match.b_work, catalog.at(match.datapack_root));
+      if (!match?.datapack_root) return null;
+      let snapshot;
+      try { snapshot = catalog.at(match.datapack_root); } catch { return null; } // Release already pruned.
+      return library.work(match.task_id, match.a_token === key ? match.a_work : match.b_work, snapshot);
     },
 
     // Explicit correction of a saved vote. The caller supplies an authenticated admin

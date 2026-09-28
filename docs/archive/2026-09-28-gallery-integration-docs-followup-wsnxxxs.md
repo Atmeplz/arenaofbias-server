@@ -1,6 +1,6 @@
 # 2026-09-28 · 画廊接入文档跟进 · wsnxxxs
 
-- 负责人：wsnxxxs ｜ 执行 AI：GPT-6 Sol / Codex desktop（后端子 agent）
+- 负责人：wsnxxxs ｜ 执行 AI：GPT-6 Sol（后端子 agent）
 
 ## 本轮目标
 
@@ -8,7 +8,7 @@
 
 ## 改动
 
-- 后端功能已在本地 `codex/gallery-integration` 提交 `51eb3cb`（`Support the gallery frontend and trusted origins`）；配套前端功能提交为 `1ee5dae`（`codex/backend-datapack-integration`）。两个分支均未获 push 授权。本次文档改动由主 agent 统一提交。
+- 后端功能已在本地 `gallery-integration` 提交 `51eb3cb`（`Support the gallery frontend and trusted origins`）；配套前端功能提交为 `1ee5dae`（`backend-datapack-integration`）。两个分支均未获 push 授权。本次文档改动由主 agent 统一提交。
 - 明确三仓库归属：`same-prompt-gallery` 托管静态画廊前端与馆藏展示；`arenaofbias-server` 托管唯一动态 API、数据库与投稿沙盒；`arenaofbias-data` 构建后端读取的数据包。
 - 本后端仓库当前没有 `dist/`。启动前需将已构建数据包交给 `DIST_DIR`；README 给出本机联调 PowerShell 配置示例，API 契约列出联调 4175/5190/5191 与代码默认 5173/5180 的区别。
 - 更正 `HANDOFF.md` 中“远端待创建”“待统一提交”“本机 dist 已存在”及历史测试数量的过时表述；旧画廊接入归档仅作为原始阶段记录保留正文，此记录作为后续更正。
