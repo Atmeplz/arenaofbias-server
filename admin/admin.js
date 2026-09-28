@@ -323,7 +323,7 @@ function openReview(w) {
         <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${esc(w.title)}" required></label>
         <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${esc(w.modelName)}" required></label>
         <label class="field"><span class="field-label">作品摘要</span><textarea class="input" name="summary" maxlength="200" rows="2">${esc(w.summary)}</textarea></label>
-        <div class="face-checks"><label><input type="checkbox" name="show_gallery" ${w.status === 'unverified' || ['show2', 'both'].includes(w.audience) ? 'checked' : ''}> 展览馆显示</label><label><input type="checkbox" name="show_arena" ${w.show_arena ? 'checked' : ''}> 竞技场显示<small>默认关闭，手动开启才进配对池</small></label></div>
+        <div class="face-checks"><label><input type="checkbox" name="show_gallery" ${w.status === 'unverified' || ['show2', 'both'].includes(w.audience) ? 'checked' : ''}> 展览馆显示</label><label><input type="checkbox" name="show_arena" ${w.show_arena ? 'checked' : ''}> 正式盲测<small>默认关闭，手动开启才进正式盲测池</small></label></div>
         <label class="field"><span class="field-label">说明<small>标记存疑时必填，作者与访客都能看到</small></span><textarea class="input" name="reason" rows="3" maxlength="500">${esc(w.status === 'questioned' ? w.reason : '')}</textarea></label>
         <p class="form-error" role="alert"></p>
         <div class="sheet-actions">
@@ -487,8 +487,8 @@ function adminWorkRow(w, face = state.system) {
   return `<tr data-work-key="${esc(`${w.task}/${w.id}`)}">
     <td><div class="admin-work-title">${thumb(w)}<div><b>${esc(w.title)}</b><small>${esc(taskTitle(w.task))}</small></div></div></td>
     <td>${esc(w.modelName)}</td><td>${w.source === 'curated' ? '精选' : '投稿'}</td><td>${statusBadge(w.status)}</td>
-    <td><label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}在${label}显示">${w[`show_${face}`] ? '已开启' : '已关闭'}</label></td>
-    ${face === 'arena' ? `<td>${w.status === 'verified' && w.show_arena ? '在配对池' : '不在配对池'}</td>` : '<td>—</td>'}
+    <td><label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}${face === 'gallery' ? '在展览馆显示' : '进正式盲测'}">${w[`show_${face}`] ? '已开启' : '已关闭'}</label></td>
+    ${face === 'arena' ? `<td>${w.status === 'verified' && w.show_arena ? '在正式盲测池' : '不在正式盲测池'}</td>` : '<td>—</td>'}
     <td><div class="actions"><button class="btn sm" data-calibrate="${esc(w.id)}">${label}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `<button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
   </tr>`;
 }
@@ -506,7 +506,7 @@ function systemWorksView() {
       <select class="input" name="status" aria-label="筛选状态"><option value="">全部状态</option>${Object.entries(WORKS_FILTERS).filter(([id]) => id !== 'all').map(([id, label]) => `<option value="${id}" ${state.workStatus === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
       <select class="input" name="show" aria-label="筛选开关"><option value="">全部开关</option><option value="on" ${state.workShow === 'on' ? 'selected' : ''}>已开启</option><option value="off" ${state.workShow === 'off' ? 'selected' : ''}>已关闭</option></select>
       <button class="btn" type="submit">筛选</button></form>
-      <div class="work-results" aria-busy="${state.workLoading}">${state.workLoading ? skeleton(7) : rows ? `<div class="table-wrap"><table class="board admin-work-table"><thead><tr><th>作品</th><th>模型</th><th>来源</th><th>状态</th><th>${faceLabel()}开关</th><th>${face === 'arena' ? '配对池' : '备注'}</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="board-empty">没有符合条件的作品。</p>'}</div>
+      <div class="work-results" aria-busy="${state.workLoading}">${state.workLoading ? skeleton(7) : rows ? `<div class="table-wrap"><table class="board admin-work-table"><thead><tr><th>作品</th><th>模型</th><th>来源</th><th>状态</th><th>${face === 'arena' ? '正式盲测' : `${faceLabel()}开关`}</th><th>${face === 'arena' ? '正式盲测池' : '备注'}</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="board-empty">没有符合条件的作品。</p>'}</div>
       <div class="admin-pagination"><button class="btn sm" data-page="${state.workPage - 1}" ${state.workPage <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${state.workPage} / ${pages} 页</span><button class="btn sm" data-page="${state.workPage + 1}" ${state.workPage >= pages ? 'disabled' : ''}>下一页</button></div>
     </section>`;
 }
@@ -602,7 +602,7 @@ function uploadDialog() {
     <label class="field"><span class="field-label">标题</span><input class="input" name="title" maxlength="40" required></label>
     <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" required></label>
     <label class="field"><span class="field-label">摘要</span><textarea class="input" name="summary" maxlength="200" rows="2"></textarea></label>
-    <div class="face-checks"><label><input type="checkbox" name="show_gallery" checked> 展览馆显示</label><label><input type="checkbox" name="show_arena"> 竞技场显示<small>默认关闭，手动开启才进配对池</small></label></div>
+    <div class="face-checks"><label><input type="checkbox" name="show_gallery" checked> 展览馆显示</label><label><input type="checkbox" name="show_arena"> 正式盲测<small>默认关闭，手动开启才进正式盲测池</small></label></div>
     <p class="form-error" role="alert"></p><button class="btn primary" type="submit">上传并通过验证</button></form>` });
   const form = $('form', sheet.el);
   form.addEventListener('submit', async (e) => {
@@ -962,7 +962,7 @@ document.addEventListener('change', async (e) => {
   toggle.parentElement.setAttribute('aria-busy', 'true');
   try {
     await api(`admin/works/${workKey(work)}/face-settings`, { method: 'POST', body: { [`show_${state.system}`]: toggle.checked } });
-    toast(`${faceLabel()}开关已${toggle.checked ? '开启' : '关闭'}`);
+    toast(`${state.system === 'arena' ? '正式盲测' : '展览馆开关'}已${toggle.checked ? '开启' : '关闭'}`);
     await reload();
   } catch (error) { toggle.checked = !toggle.checked; toggle.disabled = false; toast(error.message); }
   finally { if (toggle.isConnected) { toggle.disabled = false; toggle.parentElement.classList.remove('is-saving'); toggle.parentElement.removeAttribute('aria-busy'); } }
