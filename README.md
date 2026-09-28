@@ -4,22 +4,44 @@ Show1×Show2 融合工程的**共享后端**：整个体系中唯一的动态服
 
 - 纯 Node.js（>= 22.13），**零依赖**（无 dependencies / devDependencies，无需 `npm install`）。
 - 数据库为 `DATA_DIR/platform.db`（默认 `.data/platform.db`），首次启动自动创建，不进 git。
-- 同时监听两个端口：站点/API 端口（默认 5173）与作品沙盒内容端口（默认 5180，每个作品以独立子域 origin 伺服，互相隔离）。
+- 同时监听两个端口：API/数据包端口（代码默认 5173）与作品沙盒内容端口（代码默认 5180，每个作品以独立子域 origin 伺服，互相隔离）。实际画廊联调分别使用 5190、5191，前端位于 4175。
 
 ## 运行
 
 ```bash
+npm run fetch:datapack    # 按 datapack.json 安装 .datapack/versions/<SHA>
+npm run activate:datapack # 原子切换 .datapack/current；已是该版本时不操作
 npm start        # node server/index.mjs
 npm run admin -- <用户名>   # 提升某用户为管理员（server/cli.mjs）
 npm test         # node --test test/*.test.mjs
 ```
 
-启动前需要**已构建好的数据包**（内含 `data.json` 与 curated 作品目录），通过 `DIST_DIR` 指向，默认 `./dist`：
+启动前需安装数据包。默认优先使用 `.datapack/current`，不存在时兼容旧 `./dist`；也可通过 `DIST_DIR` 指定。下载器与前端共用数据仓库维护的 `scripts/datapack-client.mjs` 副本（跨仓冒烟核对字节一致），流式解压、安装前校验，已安装版本不覆盖。
 
-- 生产环境：数据包来自 **arenaofbias-data** 仓库的构建产物，部署到本服务后由 `DIST_DIR` 指向。
-- 本地开发：本仓库根目录的 `dist/`（已 gitignore）即为一份本地数据包，可直接 `npm start`。
+- `same-prompt-gallery` 负责静态画廊前端与原作展示；`arenaofbias-server` 独占 API、账号/投票/投稿数据库和投稿沙盒；`arenaofbias-data` 负责生成供后端读取的馆藏数据包。后端不复制前端源码，也不提供画廊入口页面。
+- 本地与生产均需先取得数据仓库构建产物，将 `DIST_DIR` 指向它的根目录。若前端与后端各自持有数据包副本，部署时应确保两者版本一致。
 
-数据包更新**无需重启服务**：`server/catalog.mjs` 每次读取 `dist/data.json` 前比较 mtime，文件变更后自动重新加载，依赖 catalog 版本的缓存随之失效。
+例如本轮本机联调（PowerShell；先将首行替换为实际已构建数据包的绝对路径）：
+
+```powershell
+$env:DIST_DIR = 'C:\path\to\built-datapack'
+$env:DATA_DIR = 'C:\path\to\isolated-runtime-data'
+$env:PORT = '5190'
+$env:CONTENT_PORT = '5191'
+$env:SITE_ORIGINS = 'http://localhost:4175'
+$env:CAPTURE = '0'
+npm start
+```
+
+前端独立启动，并将画廊的 `API_BASE_URL` 设置为 `http://localhost:5190/api/`（包含 `/api/`）；`CAPTURE=0` 只用于不验自动截图的本地联调。`CONTENT_ORIGIN_TEMPLATE` 默认随 `CONTENT_PORT` 生成 `http://{token}.localhost:5191`。生产部署按实际 HTTPS 域名设置这些变量，并由代理提供作品源泛域名。
+
+数据包更新可不重启：安装后原子切换 `DIST_DIR` 所指链接，服务按真实目录和 `.datapack-source.json` 中的**产物** commit 加载。`data.json.sourceCommit` 是不同的**源码**提交。对局持久保存真实版本目录，HTML 与后续资源固定到该目录；新对局使用新版。普通目录不能原地覆盖，修改进程环境变量也不会自动切换运行中的服务。Windows/文件系统不支持原子替换链接时，切换命令保留旧链接并报错，应停服后人工切换。
+
+`npm run prune:datapack` 默认只列出可清理目录；加 `-- --apply` 才删除。保留当前版本、配置 pin、未过期对局及默认一小时宽限期内使用的版本（`DATAPACK_CLEANUP_GRACE_MS` 可调）。清理与发布切换应串行运行，宽限期应覆盖实际请求超时；不依赖历史 votes 保留资源。数据库不在或旧库未迁移时拒绝清理。`DATAPACK_VERSIONS_DIR` 可设置版本存储根。运行数据备份必须包含 SQLite、works 和 media。
+
+开发包的 `bootstrap.datapack` 为 `null`，两端通过原始 `data.json` 的 `catalogDigest` 核对，不能冒认固定版本。数据格式和前端版本校验见 [API 契约](docs/api-contract.md)。
+
+新投票保存对局时的模型/档位与计分 key；标签更新不自动改变历史归属。管理员可运行 `npm run correct:vote -- <管理员> <投票ID> <a或b> <更正JSON文件> <原因>`；JSON 只允许 `modelId/modelName/vendor/effort`。更正单独保存，原始快照不变，并写审计。没有身份快照的 legacy 票（只可能来自迁移前的测试数据）不参与计分，也不能更正。
 
 ## 环境变量（server/config.mjs）
 
@@ -28,16 +50,18 @@ npm test         # node --test test/*.test.mjs
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `5173` | 站点 / API 端口 |
 | `CONTENT_PORT` | `5180` | 作品沙盒内容端口 |
-| `DIST_DIR` | `./dist` | 构建产物（数据包）目录 |
+| `DIST_DIR` | `.datapack/current`，不存在时 `./dist` | 当前数据包链接或不可变目录 |
 | `DATA_DIR` | `./.data` | 数据库与运行数据目录 |
-| `CONTENT_ORIGIN_TEMPLATE` | `http://{token}.localhost:5180` | 作品 origin 模板，`{token}` 必须占满一个 host label；生产需独立泛域名 |
-| `SITE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 允许 iframe 嵌入作品的站点 origin（逗号分隔） |
+| `CONTENT_ORIGIN_TEMPLATE` | `http://{token}.localhost:<CONTENT_PORT>` | 作品 origin 模板，默认端口 5180；`{token}` 必须占满一个 host label，生产需独立泛域名 |
+| `SITE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 可信前端 origin（逗号分隔，含协议与端口），同时允许凭据 CORS、API 写操作和 iframe 嵌入作品 |
 | `ADMIN_USERNAMES` | 空 | 始终持有管理员角色的用户名（逗号分隔） |
 | `CONTENT_CDN_ALLOWLIST` | `cdn.jsdelivr.net,unpkg.com,cdnjs.cloudflare.com,esm.sh,fonts.googleapis.com,fonts.gstatic.com` | 作品允许加载脚本/样式/字体/数据的公共 CDN 白名单 |
 | `CAPTURE` | 开（`0` 关闭） | 投稿作品的无头截图（Playwright + 本地 Chrome） |
 | `CAPTURE_BROWSER` | `chrome` | 截图所用浏览器通道 |
 | `COOKIE_SECURE` | 关（`1` 开启） | session cookie 加 Secure 标记 |
+| `COOKIE_SAME_SITE` | `Lax` | `Lax` / `Strict` / `None`；跨站 HTTPS 部署用 `None`，并必须开启 `COOKIE_SECURE=1` |
 | `TRUST_PROXY` | 关（`1` 开启） | 信任反向代理的客户端 IP 头 |
+| `SERVER_VERSION` | Git HEAD 或 `dev` | 启动时确定的服务端版本，返回在 bootstrap 中 |
 
 ## API 概览（server/app.mjs）
 
@@ -49,24 +73,31 @@ npm test         # node --test test/*.test.mjs
 | POST | `/api/auth/register` | 注册并建立会话（限流） |
 | POST | `/api/auth/login` | 登录（限流） |
 | POST | `/api/auth/logout` | 登出 |
-| POST | `/api/drafts?task=&name=` | 上传 ZIP/HTML，检查后暂存为草稿（需登录，限流） |
+| POST | `/api/questions` | 发布社区题目，保留提示词、标签和允许的提交格式（需登录） |
+| POST | `/api/drafts?task=&name=&template=` | 上传 ZIP/HTML，检查后暂存为草稿；`template=static|vite` 可选，Vite 项目必须含构建产物（需登录，限流） |
 | DELETE | `/api/drafts/:id` | 丢弃草稿（需登录） |
 | POST | `/api/works` | 由草稿正式投稿，入审核队列并排队截图（需登录） |
 | DELETE | `/api/works/:task/:id` | 删除投稿（需登录，本人或管理员） |
 | POST | `/api/works/:task/:id/review` | 审核投稿（仅管理员） |
 | POST | `/api/works/:task/:id/reactions` | emoji 反应（需登录） |
-| GET | `/api/me` | 我的投稿与投票（需登录） |
+| GET | `/api/me` | 本人题目、投稿、投票、近 365 天活跃热图和收到的表情（需登录） |
+| PATCH | `/api/me` | 修改昵称，登录用户名不变（需登录） |
 | GET | `/api/review` | 全部投稿与审计日志（仅管理员） |
 | POST | `/api/arena/matches` | 创建一场盲投对战（限流） |
 | POST | `/api/arena/matches/:id/vote` | 对一场对战投票（限流） |
 | GET | `/api/leaderboard?task=&by=` | 排行榜，`by=config|model`，`task` 可选 |
 | GET | `/media/up-xxxxxxxx/(cover.png|cover.jpg|cover.webp|first.jpg|mobile.jpg)` | 投稿的封面/截图（CSP: default-src 'none'） |
-| GET | `/*` | dist 静态文件（本仓库定位下 dist 通常只放数据包，无站点页面时返回 404 属正常） |
+| GET | `/*` | `DIST_DIR` 内的静态数据包文件；不承诺提供画廊入口页面 |
 
 内容端口（默认 5180）：按 `CONTENT_ORIGIN_TEMPLATE` 的 `{token}` 子域伺服单个作品目录，施加沙盒 CSP 与 CDN 白名单（见 `server/content.mjs`）。
+
+前端独立部署时，`SITE_ORIGINS` 填前端真实 origin（不含路径或末尾 `/`），所有 fetch/XHR 携带会话凭据（`credentials: 'include'` / `withCredentials = true`）。可信来源支持 API 的 OPTIONS 预检及 `Content-Type` 请求头；不使用通配 CORS。`captures` / `cover` 的 `media/...` 路径按后端站点根解析，不能按前端路径解析。跨站 Cookie 还受浏览器第三方 Cookie 设置限制；优先采用同站域名的前端和 API 部署。
 
 ## 测试
 
 ```bash
-npm test    # 11 个用例：排名算法、上传检查、上传→审核→盲投全流程
+npm run check
+npm test    # API、迁移、版本切换、投票快照、更正审计及清理保留规则
 ```
+
+后端功能提交为本地 `51eb3cb`（`gallery-integration`），配套画廊前端功能提交为 `1ee5dae`（`backend-datapack-integration`）。功能提交前 19 项测试通过；跨端口真实浏览器联调也已覆盖登录/刷新、题目、昵称、HTML 投稿、审核、盲评、榜单及个人统计。公网 HTTPS、跨站 Cookie、自动截图、真机和全部原作交互尚未验证；这不等同于全站交互验证。上述分支均未 push。

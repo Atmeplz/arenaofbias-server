@@ -163,14 +163,16 @@ function references(html) {
 
 const hostOf = (url) => { try { return new URL(url, 'https://local.invalid/').host; } catch { return ''; } };
 
-export function inspectUpload(buffer, filename, { limits, cdn }) {
+export function inspectUpload(buffer, filename, { limits, cdn, template }) {
   if (!buffer.length) fail(400, '文件是空的');
   const isZip = buffer.length >= 4 && buffer.readUInt32LE(0) === 0x04034b50;
   const isHtml = !isZip && (/\.html?$/i.test(filename) || /^\s*(<!doctype html|<html|<head|<body|<meta|<script|<!--)/i.test(buffer.subarray(0, 512).toString('utf8').replace(/^﻿/, '')));
   if (!isZip && !isHtml) fail(400, '请上传 ZIP 压缩包或单个 HTML 文件');
 
   let files = isZip ? stripWrapper(readZip(buffer, limits)) : new Map([['index.html', buffer]]);
-  const { root, entry } = findEntry(files);
+  const builtRoot = (template === 'vite' || (!template && files.has('package.json')))
+    && ['dist', 'build', 'out'].find((dir) => files.has(`${dir}/index.html`));
+  const { root, entry } = builtRoot ? { root: builtRoot, entry: 'index.html' } : findEntry(files);
   const served = new Map([...files].filter(([path]) => !root || path.startsWith(`${root}/`)).map(([path, data]) => [root ? path.slice(root.length + 1) : path, data]));
   const entryData = served.get(entry);
   const html = entryData.toString('utf8');

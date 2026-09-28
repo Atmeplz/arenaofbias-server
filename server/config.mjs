@@ -1,6 +1,7 @@
 // Platform configuration. Every value can be overridden with an environment variable;
 // the defaults suit a single machine running `npm start` after `npm run build`.
 import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,7 +16,7 @@ export const config = {
   host: env.HOST || '127.0.0.1',
   port,
   contentPort,
-  dist: resolve(env.DIST_DIR || join(ROOT, 'dist')),
+  dist: resolve(env.DIST_DIR || (existsSync(join(ROOT, '.datapack', 'current')) ? join(ROOT, '.datapack', 'current') : join(ROOT, 'dist'))),
   // The admin web app: static files served under /admin/, checked into this repo.
   admin: resolve(env.ADMIN_DIR || join(ROOT, 'admin')),
   dataDir: resolve(env.DATA_DIR || join(ROOT, '.data')),
@@ -23,7 +24,7 @@ export const config = {
   // Locally *.localhost resolves to this machine; production needs a wildcard domain
   // on a registrable domain separate from the site (see docs/ARCHITECTURE.md).
   contentTemplate: env.CONTENT_ORIGIN_TEMPLATE || `http://{token}.localhost:${contentPort}`,
-  // Origins allowed to frame works (the site itself).
+  // Trusted frontend origins: credentialed API access and work framing.
   siteOrigins: list(env.SITE_ORIGINS, `http://localhost:${port},http://127.0.0.1:${port}`),
   // Usernames that always hold the admin role; `npm run admin -- <name>` also promotes.
   admins: list(env.ADMIN_USERNAMES, '').map((name) => name.normalize('NFKC').toLowerCase()),
@@ -33,6 +34,7 @@ export const config = {
   capture: env.CAPTURE !== '0',
   captureChannel: env.CAPTURE_BROWSER ?? 'chrome',
   secureCookies: env.COOKIE_SECURE === '1',
+  cookieSameSite: env.COOKIE_SAME_SITE || 'Lax',
   trustProxy: env.TRUST_PROXY === '1',
 };
 

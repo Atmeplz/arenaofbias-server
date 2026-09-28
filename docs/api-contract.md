@@ -12,7 +12,7 @@
 
 ### 1.1 服务定位
 
-本服务是整个体系中**唯一的动态服务与唯一写库者**，负责账号、投票、排行榜、投稿审核与作品沙盒伺服。两个前端均为静态部署，除本服务外不存在其他后端；数据库（`DATA_DIR/platform.db`）由本服务独占，前端不直接读写。
+本服务是整个体系中**唯一的动态服务与唯一写库者**，负责账号、投票、排行榜、投稿审核与作品沙盒伺服。`same-prompt-gallery` 提供静态画廊前端与原作展示，`arenaofbias-server` 提供动态 API、数据库和投稿沙盒，`arenaofbias-data` 构建后端读取的馆藏数据包。两个前端各自部署并调用本服务；数据库（`DATA_DIR/platform.db`）由本服务独占，前端不直接读写。
 
 服务同时监听**两个端口**：
 
@@ -25,17 +25,18 @@
 
 | 环境 | Base URL |
 | --- | --- |
-| 本地开发 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180` |
+| 代码默认 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180`；启动仍需提供 `DIST_DIR` 数据包 |
+| 2026-09-28 本机联调 | 前端 `http://localhost:4175`；API 与媒体 `http://localhost:5190`；作品内容 `http://{token}.localhost:5191`。后端设 `PORT=5190`、`CONTENT_PORT=5191`、`SITE_ORIGINS=http://localhost:4175`、`DIST_DIR=<已构建数据包目录>`、`DATA_DIR=<隔离运行目录>`、`CAPTURE=0`；前端 API base URL 指向 `http://localhost:5190/` |
 | 生产环境 | **待拍板（占位）**：API 站点域与作品内容域需为**两个不同的可注册域**（作品域需泛域名，形如 `*.w.example.com`），以域名隔离作为作品沙盒的根基。生产域名尚未在公网验证，列为早期验证项 |
 
-作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。
+作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。投稿 `captures` / `cover` 返回相对路径 `media/...`，前端以 API 站点根解析；馆藏 `scene` 路径取自画廊所用数据包。
 
 ### 1.3 认证方式
 
 - 认证基于 **Cookie 会话**。注册 / 登录成功后，响应头种下：
   `Set-Cookie: sp_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`（30 天；`COOKIE_SECURE=1` 时追加 `Secure`）。
 - Cookie 名为 `sp_session`，HttpOnly，前端脚本不可读；服务端只存其 SHA-256。
-- 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'same-origin'`；跨域部署时见 1.5 的待拍板项）。
+- 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'include'`，XHR 使用 `withCredentials = true`）。`COOKIE_SAME_SITE` 支持 `Lax`（默认）、`Strict`、`None`；跨站 HTTPS 部署设 `None` 并开启 `COOKIE_SECURE=1`，否则服务拒绝启动。第三方 Cookie 仍受浏览器设置限制，建议前端与 API 使用同站域名。
 - 登出（`POST /api/auth/logout`）删除服务端会话并下发 `Max-Age=0` 的清空 Cookie。
 - 角色：`member`（默认）与 `admin`。用户名被列入服务端 `ADMIN_USERNAMES` 环境变量的账号在注册 / 登录时自动持有 `admin` 角色；运营亦可经 `npm run admin -- <用户名>` 提升。
 
@@ -48,16 +49,17 @@
 ```
 
 - `error` 恒存在，面向最终用户，可直接展示。
-- `code` 仅在少数业务错误上出现，目前仅有两个取值，均出自创建对战：`"insufficient"`（对战池不足）与 `"exhausted"`（该用户已评完全部组合）。前端逻辑判断请用 `code`，不要匹配 `error` 文案。
+- `code` 仅在少数业务错误上出现：`"insufficient"`（对战池不足）、`"exhausted"`（该用户已评完全部组合）、`"datapack_mismatch"`（馆藏版本失配）。前端逻辑判断请用 `code`，不要匹配 `error` 文案。
 - HTTP 状态码全集：`400`（参数无效）、`401`（未登录 / 凭证错误）、`403`（无权限 / 来源无效）、`404`（不存在）、`405`（方法不允许）、`409`（状态冲突）、`413`（体积超限）、`415`（Content-Type 非 JSON）、`429`（限流 / 待审超限）、`500`（服务端错误，固定文案「服务器出错了，请稍后再试」）。
-- 非 GET/HEAD 的 `/api/*` 请求必须带有与站点同源的 `Origin` 头（`assertSameOrigin`，Origin 的 host 须与请求 Host 一致），否则一律 `403 请求来源无效`。浏览器跨域 fetch 天然带 Origin，因此跨站前端在当前代码下**所有写操作都会 403**（见 1.5 待拍板）。
+- 非 GET/HEAD 的 `/api/*` 请求必须带有可信 `Origin`：请求自身的完整 origin 或 `SITE_ORIGINS` 白名单中的完整 origin（精确协议、主机与端口），否则 `403 请求来源无效`。同源判断只在 `TRUST_PROXY=1` 时使用代理传入的 HTTPS 协议。
 - JSON 请求体默认上限 64 KB；`POST /api/works` 单独放宽至 6 MB（封面以 data URL 内嵌所致）。
 
 ### 1.5 跨域约定（CORS）
 
-- **现状：服务端不下发任何 `Access-Control-Allow-*` 头**。两个前端若与本服务同域（或经反向代理同域）部署，无任何问题；不同域部署时浏览器会拦截全部响应。
-- 同源校验（1.4）与 CORS 是两道独立防线：即便将来放开 CORS，`Origin` 校验仍决定写操作是否被接受。
-- **计划（待拍板）**：仅对公开 GET 端点（`/api/bootstrap`、`/api/leaderboard`、数据包静态文件等）开放跨域读取；写端点是否放行跨域、以及随之需要的 `SameSite=None; Secure` Cookie 改造，需双方另行拍板。
+- `SITE_ORIGINS` 同时控制可信前端的凭据 CORS、写请求与作品 `frame-ancestors`；填写不含路径或末尾 `/` 的 origin，以逗号分隔。不反射任意来源，不使用 `*`。
+- 可信来源的 API、媒体与数据包静态响应下发 `Access-Control-Allow-Origin: <origin>`、`Access-Control-Allow-Credentials: true` 与 `Vary: Origin`，包括 API 错误响应。
+- `/api/*` 的 OPTIONS 预检按请求方法匹配已有路由，成功返回 `204`；允许 `Content-Type` 和 `X-Datapack-Version`，缓存 600 秒。未知端点返回 `404`，不支持的方法返回 `405`，外部来源或其它请求头返回 `403`。
+- 非可信来源的读响应不下发许可头；非可信来源的 API 写请求和预检被拒绝。无 Origin 的读请求仍可供服务端与 CLI 使用。
 
 ### 1.6 限流一览
 
@@ -138,7 +140,7 @@
 
 ### 2.2 任务 / 题目（task）
 
-题目由数据包定义，不落库。字段见第 4 节。平台层关心的两个派生属性：
+馆藏题目由数据包定义；社区题目经 `POST /api/questions` 写入 SQLite，加入同一个投稿与盲评目录。字段见第 4 节与 3.14。平台层关心的两个派生属性：
 
 - `id` / `title`：标识与标题。
 - `acceptsUploads`：`promptPending` 为真时置假——提示词原文尚未公开的题目**不接受上传**（`POST /api/drafts` 返回 `409`）。
@@ -154,22 +156,22 @@
 HTTP 公开视图恒为：
 
 ```json
-{ "id": "…", "name": "…", "role": "member" }
+{ "id": "…", "name": "…", "nickname": "…", "role": "member" }
 ```
 
-未登录时用户字段为 `null`。用户名规则：NFKC 规范化后 2–24 位文字（Unicode 字母）、数字、下划线或连字符；密码 8–128 位。
+未登录时用户字段为 `null`。`nickname` 默认返回登录用户名，可经 `PATCH /api/me` 修改；数据库增加 `nickname` 列，`name` 仍为登录用户名。用户名规则：NFKC 规范化后 2–24 位文字（Unicode 字母）、数字、下划线或连字符；密码 8–128 位。
 
 ### 2.5 对局（match）
 
-数据库字段：`id`（24 位十六进制）、`user_id`（可空，匿名对局）、`task_id`、`a_work` / `b_work`（两侧作品 ID）、`a_token` / `b_token`（两侧内容令牌，`m` + 32 位十六进制，唯一）、`created_at`、`expires_at`（3 小时）、`choice`（`a` / `b` / `tie` / `skip`，未投为 null）、`decided_at`。
+数据库字段：`id`（24 位十六进制）、`user_id`（可空，匿名对局）、`task_id`、`a_work` / `b_work`（两侧作品 ID）、`a_token` / `b_token`（两侧内容令牌，`m` + 32 位十六进制，唯一）、`created_at`、`expires_at`（3 小时）、`choice`（`a` / `b` / `tie` / `skip`，未投为 null）、`decided_at`。新增 `datapack_root`（创建时 `DIST_DIR` 的真实目录）、`datapack_version` 和两侧 `a_identity` / `b_identity` JSON 快照。旧对局这些新增列为 null，只能按当前数据包尽力解析。
 
 对局**从不**经列表端点暴露；只在创建与投票两个端点的响应中出现（见 3.8、3.9）。内容令牌在对局有效期内经内容端口伺服对应作品，令牌本身不泄露作品身份。
 
 ### 2.6 投票（vote）
 
-数据库字段：`id`、`match_id`（唯一）、`user_id`、`task_id`、`a_work` / `b_work`、`pair_key`（`题目:作品A+作品B`，ID 排序后拼接）、`choice`（`a` / `b` / `tie`，`skip` 不产生投票行）、`created_at`。约束：`UNIQUE(user_id, pair_key)`——**同一用户对同一作品组合只计一票**。
+数据库字段：`id`、`match_id`（唯一）、`user_id`、`task_id`、`a_work` / `b_work`、`pair_key`（`题目:作品A+作品B`，ID 排序后拼接）、`choice`（`a` / `b` / `tie`，`skip` 不产生投票行）、`created_at`，以及 `a_identity` / `b_identity` JSON 原始快照、`a_correction` / `b_correction` JSON 显式更正和 `identity_source`（`snapshot` / `legacy`）。快照含当时模型 ID、名称、厂商、档位、归一化档位、model/config 计分 key，以及内容摘要 `digest`（馆藏作品为入口页 SHA-256，投稿为全包 SHA-256）。旧票迁移为 `legacy` 且快照为 null，不参与计分；迁移前没有身份快照的对局不能再投票。新票按持久快照或显式更正计分，原始快照保持不变。约束：`UNIQUE(user_id, pair_key)`——**同一用户对同一作品组合只计一票**。
 
-计入排行的投票需同时满足：投票时已登录、双方作品当前均为 `verified` 且存在、非本人作品、未评过该组合。作品被标记存疑或删除后，其相关投票即时退出排行；恢复后重新计入（见 3.9）。
+计入排行的投票需同时满足：投票时已登录、双方作品当前均为 `verified` 且存在、非本人作品、未评过该组合。作品被标记存疑或删除后，其相关投票即时退出排行；恢复后重新计入（见 3.9）。审核只影响是否计入，不会改写新票的计分归属。需要改正归属时由管理员明确更正单票，审计记录包含更正前有效值、更正后值、理由和操作者；缺少原始双侧快照的 legacy 票不可按推测更正。
 
 ### 2.7 审核状态流转
 
@@ -198,6 +200,10 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 ```json
 {
+  "datapack": "<数据仓库的 40 位 Git commit SHA，或 null>",
+  "catalogDigest": "<实际加载 data.json 原始字节的 SHA-256>",
+  "apiVersion": 1,
+  "serverVersion": "<服务端构建版本或 dev>",
   "user": { "id": "…", "name": "alice", "role": "member" },
   "site": {
     "content": "http://{token}.localhost:5180",
@@ -208,6 +214,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
     "limits": { "uploadBytes": 31457280, "coverBytes": 3145728, "pendingPerUser": 5, "provisionalGames": 30 }
   },
   "works": [ /* 全部未删除投稿的公开视图，按创建时间倒序 */ ],
+  "questions": [ /* 社区题目公开视图，见 3.14 */ ],
   "reactions": {
     "counts": { "task-id/work-id": { "🔥": 3 } },
     "mine": { "task-id/work-id": ["🔥"] }
@@ -220,6 +227,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 ```
 
 - `site.content` 为作品 origin 模板，`{token}` 占位；前端无需自行替换（`scene` / `preview` 均为替换好的完整 URL），此字段仅供诊断与展示。
+- `datapack` 只在已加载数据包带有有效 GitHub 来源文件时返回真实 SHA；无来源元数据或标为 `local` 的本地包返回 `null`。`catalogDigest` 是实际加载的 `data.json` 原始字节的 SHA-256，本地开发前后端在 `datapack=null` 时可据此比较是否使用同一目录数据版本。`serverVersion` 在进程启动时从 `SERVER_VERSION`、`GITHUB_SHA` 或 Git HEAD 读取一次，均不可用时为 `dev`。
 - `works` **包含未验证与存疑投稿**（不含馆藏作品，馆藏经数据包分发），访客可见非特权字段。
 - `arena[题目]`：`works` = 对战池作品数（馆藏 + 已验证投稿），`entries` = 不同「模型+档位」配置数，`uploads` = 该题是否接受上传。
 - 匿名：`user`、`me` 为 `null`，`reactions.mine` 为 `{}`；`review` 仅管理员非 null（`{ "unverified": <待审数> }`）。
@@ -254,7 +262,9 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 草稿是「上传 → 检查 → 试加载 → 确认提交」流水线的中间态，有效期 24 小时。
 
-**`POST /api/drafts?task=<题目id>&name=<文件名>`**
+**`POST /api/drafts?task=<题目id>&name=<文件名>&template=<static|vite>`**
+
+`template` 可选，必须为该社区题目允许的格式；省略时从上传内容推断。Vite 项目必须含已构建的 `dist/index.html` 或其它识别的构建入口，存在源 `index.html` 时仍优先伺服构建目录；服务端不运行上传项目的构建脚本。
 
 **认证**：登录。**限流**：drafts 桶（12 次/10 分钟/用户）。**请求体**：原始 ZIP 或单个 HTML 文件的二进制（**非 JSON**），上限 30 MB。
 
@@ -356,13 +366,25 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 错误：`401`；`404 作品不存在`；`409 存疑作品仅供参考，不能再互动`；`400 不支持这个表情`（表情须在 `bootstrap.site.emojis` 白名单内）。馆藏作品同样可互动。
 
-**`GET /api/me`** —— 我的投稿与票数
+**`GET /api/me`** —— 本人题目、投稿与参与统计
 
 **认证**：登录。响应：
 
 ```json
-{ "works": [ <本人投稿公开视图，含特权字段> ], "votes": 12 }
+{
+  "questions": [ <本人社区题目公开视图> ],
+  "works": [ <本人投稿公开视图，含特权字段> ], "votes": 12,
+  "joinedAt": "…ISO…",
+  "activity": { "from": "YYYY-MM-DD", "to": "YYYY-MM-DD", "days": [ { "date": "YYYY-MM-DD", "count": 2 } ], "total": 12, "activeDays": 5 },
+  "receivedReactions": { "counts": { "🔥": 2 }, "total": 2 }
+}
 ```
+
+活跃统计按 UTC+8 的近 365 天汇总本人发布题目、投稿、有效落库投票和当前表情记录；历史投稿删除后仍计入活跃。收到的表情仅统计本人当前未删除投稿且排除自评。
+
+**`PATCH /api/me`** —— 更新昵称
+
+认证：登录；限流：write 桶。请求 `{ "nickname": "河畔观测员" }`，响应 `{ "user": <用户公开视图> }`。昵称经 NFKC 与首尾去空白后为 1–24 字，不能含控制字符；无效返回 `400`。不能更改登录用户名或角色。题目与作品作者公开显示昵称。
 
 **`GET /api/review`** —— 审核台（仅管理员）
 
@@ -393,6 +415,8 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 - `a` / `b` 为两侧作品的**不透明令牌 origin**（`m` 令牌，对局有效期 3 小时），iframe 直接加载；页面与地址均不泄露作品 / 模型身份。左右顺序随机。
 - `counted`：登录用户恒 `true`，匿名恒 `false`。
+- 对局创建时一次捕获当前馆藏目录和两侧身份。随后切换数据包，旧令牌仍从原目录提供 HTML 与相对资源，旧对局仍可揭晓/投票；部署应保留该目录到相关对局全部过期并经过清理宽限期。
+- 前端在写请求上携带 `X-Datapack-Version: <前端所构建的数据仓库 SHA>`（读请求不带，避免跨源 GET 预检）；创建馆藏对局、馆藏题目草稿及该草稿的正式投稿时，如果该值与服务端当前可信 SHA 不同，返回 `409 + code:"datapack_mismatch"`。已创建对局的投票和社区题目操作不受此检查阻断；缺少请求头保持旧客户端兼容。
 - 抽样规则：先抽两个不同「模型+档位」配置，再各抽一件作品；偏向对局数少的配置、偏向实力相近者（同档 90% 概率软匹配，分差过大重掷 2 次）；避开上一场两侧作品、本人作品与已评组合。
 - `previous` 缺省时，登录用户自动取本人该题最近一场对局作为「上一场」回避。
 
@@ -473,13 +497,19 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 ### 3.13 站点静态文件
 
-`GET /*`（非 `/api/`、非 `/media/`）伺服 `DIST_DIR` 内文件：目录映射 `index.html`，不存在返回纯文本 `404 Not found`。`index.html` 附加站点 CSP 与 `Referrer-Policy: same-origin`。本仓库定位下 dist 通常只放数据包，画廊前端由此直接读取 `data.json` 与馆藏作品目录（见第 4 节）。
+`GET /*`（非 `/api/`、非 `/media/`）伺服 `DIST_DIR` 内文件：目录映射 `index.html`，不存在返回纯文本 `404 Not found`。`index.html` 附加站点 CSP 与 `Referrer-Policy: same-origin`。这条路由可分发数据包文件，但后端仓库不包含画廊入口页面，也不自带 `dist/`；独立画廊从自己的静态部署读取馆藏数据与作品目录（见第 4 节）。
+
+### 3.14 `POST /api/questions` —— 发布社区题目
+
+认证：登录；限流：write 桶。请求体 `{ "title": "…", "summary": "…", "prompt": "…", "tags": ["UI"], "templates": ["static", "vite"] }`。标题、测试简述、完整提示词必填，最多 70 / 400 / 20000 字；提示词除首尾空白外保留原文。标签 1–6 个，每个 1–24 字，按 NFKC 与大小写归一去重，已有标签沿用其名称。格式至少选一种 `static` / `vite`，省略时默认两种。
+
+成功 `200`：`{ "question": { "id": "q-<16hex>", "title": "…", "summary": "…", "prompt": "…", "tags": ["UI"], "templates": ["static", "vite"], "owner": "作者昵称", "version": 1, "community": true, "createdAt": "…ISO…", "date": "YYYY-MM-DD" } }`。作者从会话读取，不能由客户端指定。错误：`401` / `400` / `429`。社区题目通过 `bootstrap.questions` 公开、通过 `me.questions` 返回本人题目，立即接受关联投稿；其 `arena` 初始为空池。
 
 ---
 
 ## 4. 数据包契约（`dist/data.json`）
 
-数据包由数据仓库（arenaofbias-data）构建产出，经 `DIST_DIR` 指向，**既是服务端馆藏目录的输入，也是画廊前端直接消费的静态资源**。其结构属契约的一部分。
+数据包由数据仓库（arenaofbias-data）构建产出；部署到 `DIST_DIR` 的副本是服务端馆藏目录输入。画廊前端从自己的静态部署消费对应数据与馆藏资源；若前后端各持有副本，应同步版本。其结构属契约的一部分。后端仓库当前无默认 `dist/`，运行前必须提供数据包。
 
 ### 4.1 顶层结构
 
@@ -487,6 +517,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 {
   "title": "同题异答",
   "subtitle": "…", "description": "…", "repo": "…",
+  "schemaVersion": 1, "sourceCommit": "<数据仓库 commit SHA>",
   "models": [ <模型> ],
   "tasks": [ <题目> ]
 }
@@ -515,7 +546,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 | `model` | 模型 ID（对应 `models[].id`） |
 | `effort` / `sourceLabel` | 档位 / 来源标签（服务端映射为 `tool`） |
 | `title` / `summary` / `addedAt` | 标题 / 简介 / 收录时间 |
-| `scene` | 作品目录相对路径（如 `results/grok-4.6/`），画廊前端按静态路径直接加载 |
+| `scene` | 作品目录相对路径（如 `results/grok-4.6/`），画廊前端按其静态部署路径加载；后端按其 `DIST_DIR` 副本供盲评使用 |
 | `source` / `readme` | 源码 / 说明链接 |
 | `gallery` | `[{ "src", "caption" }]` 图集 |
 | `captures` | `{ "条件id": "截图相对路径" }` |
@@ -523,10 +554,11 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 ### 4.2 更新方式与缓存
 
-- 服务端 `server/catalog.mjs` 每次访问前比较 `dist/data.json` 的 **mtime**：mtime 不变则沿用内存副本，变化则整包重载。因此**更新数据包无需重启服务**，替换文件（mtime 变化）即生效。
-- catalog 版本号（即该 mtime）参与排行榜缓存键；数据包更新后相关缓存自动失效。
-- 馆藏作品目录（`scene` 指向的目录）由站点静态伺服直接分发，不走 API。
-- 注意：**mtime 不变化的内容改写不会被感知**（如某些 CI 检出方式会保留 mtime），部署时应保证文件以新写入方式落地。
+- 已发布数据包目录包含 `.datapack-source.json`，形如 `{ "source": "github", "repo": "owner/arenaofbias-data", "commit": "<40 位数据包 SHA>" }`。`data.json.sourceCommit` 是打包前的源码 SHA，与数据包 SHA 分别校验格式，不要求相等；缺少来源文件或来源标为 `local` 时视为 `unversioned/dev`，即使 `data.json` 自称某 SHA 也不作为可信 pin。旧数据包缺少 `schemaVersion` 按版本 1 读取；不支持其它 schemaVersion。
+- `DIST_DIR` 可直接指向不可变版本目录，或为指向它的 symlink/junction。切换指针到另一版本目录后，服务无需重启；缓存以真实目录和来源 SHA 为版本标识，不依赖 mtime。无来源文件的开发目录按 `data.json` 内容摘要检测变化。
+- 对局保存其原版本真实目录，作品页面及资源在切换或重启后仍从该目录读取；历史票的计分身份自足于数据库，不要求永久保留旧包。清理旧目录时应保留当前目录，以及 `matches.expires_at` 尚未超过宽限期所引用的 `matches.datapack_root`。目录已被清理的对局，令牌不再提供内容，投票返回 `410`；服务也会释放该目录的内存快照。
+- 后端可从 `DIST_DIR` 静态分发馆藏作品目录，不走 API；独立画廊则从自身静态部署加载馆藏资源。
+- 版本目录一经发布必须保持内容不可变；直接覆盖仍被旧对局引用的同一目录不能保证旧资源可用。
 
 ### 4.3 消费方注意点
 

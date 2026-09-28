@@ -61,13 +61,18 @@ export function clientIp(req, trustProxy) {
   return forwarded || req.socket.remoteAddress || 'unknown';
 }
 
-// State-changing requests must come from the site itself. Browsers always send Origin on
-// POST/PATCH/DELETE fetches, so a missing or foreign Origin is refused.
-export function assertSameOrigin(req) {
+// Trust complete origins, including their scheme and port. Proxy headers affect the
+// local origin only when the operator has explicitly enabled TRUST_PROXY.
+export function isTrustedOrigin(req, { siteOrigins = [], trustProxy = false } = {}) {
   const origin = req.headers.origin;
-  let host = '';
-  try { host = new URL(origin).host; } catch { /* missing or malformed */ }
-  if (!host || host !== req.headers.host) fail(403, '请求来源无效');
+  try { if (new URL(origin).origin !== origin) return false; } catch { return false; }
+  if (siteOrigins.includes(origin)) return true;
+  const protocol = trustProxy && req.headers['x-forwarded-proto'] === 'https' ? 'https' : req.socket.encrypted ? 'https' : 'http';
+  return origin === `${protocol}://${req.headers.host}`;
+}
+
+export function assertSameOrigin(req, config) {
+  if (!isTrustedOrigin(req, config)) fail(403, '请求来源无效');
 }
 
 export function createRouter() {

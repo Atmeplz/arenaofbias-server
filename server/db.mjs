@@ -114,6 +114,29 @@ const MIGRATIONS = [
      work_id TEXT,
      detail TEXT NOT NULL DEFAULT ''
    );`,
+  `CREATE TABLE questions (
+     id TEXT PRIMARY KEY,
+     owner_id TEXT NOT NULL REFERENCES users (id),
+     title TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     prompt TEXT NOT NULL,
+     tags TEXT NOT NULL,
+     templates TEXT NOT NULL,
+     version INTEGER NOT NULL DEFAULT 1,
+     created_at INTEGER NOT NULL
+   );
+   CREATE INDEX questions_owner ON questions (owner_id);`,
+  `ALTER TABLE users ADD COLUMN nickname TEXT NOT NULL DEFAULT '';`,
+  `ALTER TABLE matches ADD COLUMN datapack_root TEXT;
+   ALTER TABLE matches ADD COLUMN datapack_version TEXT;
+   ALTER TABLE matches ADD COLUMN a_identity TEXT;
+   ALTER TABLE matches ADD COLUMN b_identity TEXT;
+   ALTER TABLE votes ADD COLUMN a_identity TEXT;
+   ALTER TABLE votes ADD COLUMN b_identity TEXT;
+   ALTER TABLE votes ADD COLUMN identity_source TEXT NOT NULL DEFAULT 'legacy';
+   CREATE INDEX matches_datapack_expiry ON matches (datapack_root, expires_at);`,
+  `ALTER TABLE votes ADD COLUMN a_correction TEXT;
+   ALTER TABLE votes ADD COLUMN b_correction TEXT;`,
 ];
 
 export function openDatabase(file) {

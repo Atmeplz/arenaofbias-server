@@ -34,7 +34,8 @@ export function createLibrary({ db, catalog, config, limits }) {
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const originOf = (key) => config.contentTemplate.replace('{token}', key);
 
-  const WORK = `SELECT works.*, owner.name AS owner_name, reviewer.name AS reviewer_name FROM works
+  const WORK = `SELECT works.*, COALESCE(NULLIF(owner.nickname, ''), owner.name) AS owner_name,
+    COALESCE(NULLIF(reviewer.nickname, ''), reviewer.name) AS reviewer_name FROM works
     LEFT JOIN users owner ON owner.id = works.owner_id LEFT JOIN users reviewer ON reviewer.id = works.reviewed_by`;
   const q = {
     draft: db.prepare('SELECT * FROM drafts WHERE id = ?'),
@@ -197,16 +198,16 @@ export function createLibrary({ db, catalog, config, limits }) {
     audit,
     mediaDir: dirs.media,
 
-    work(taskId, id) {
-      return catalog.work(taskId, id) ?? upload(taskId, id);
+    work(taskId, id, snapshot = null) {
+      return (snapshot ?? catalog.snapshot()).work(taskId, id) ?? upload(taskId, id);
     },
     byContentKey(key) {
       const row = q.workByKey.get(key);
       return row ? fromRow(row) : null;
     },
     // Curated works plus verified uploads: the pool blind comparisons draw from.
-    eligible(taskId) {
-      return [...catalog.works(taskId), ...q.worksOfTask.all(taskId).map(fromRow).filter(isEligible)];
+    eligible(taskId, snapshot = null) {
+      return [...(snapshot ?? catalog.snapshot()).works(taskId), ...q.worksOfTask.all(taskId).map(fromRow).filter(isEligible)];
     },
     uploads() {
       return q.works.all().map(fromRow);
@@ -246,12 +247,18 @@ export function createLibrary({ db, catalog, config, limits }) {
     },
 
     // ---- drafts: stage → trial load → submit --------------------------------------------
-    createDraft(user, taskId, filename, buffer) {
+    createDraft(user, taskId, filename, buffer, template = null) {
       const task = catalog.task(taskId);
       if (!task) fail(404, '题目不存在');
       if (!task.acceptsUploads) fail(409, '这道题的提示词原文尚未公开，暂不接受上传');
       purgeDrafts();
-      const inspected = inspectUpload(buffer, filename, { limits, cdn: config.cdn });
+      const allowed = task.templates ?? ['static', 'vite'];
+      if (template && !allowed.includes(template)) fail(400, '该题不支持此提交格式');
+      const selected = template ?? (allowed.length === 1 ? allowed[0] : null);
+      const inspected = inspectUpload(buffer, filename, { limits, cdn: config.cdn, template: selected });
+      const format = selected ?? (inspected.files.has('package.json') && inspected.root ? 'vite' : 'static');
+      if (!allowed.includes(format)) fail(400, '该题不支持此提交格式');
+      if (format === 'vite' && (!inspected.files.has('package.json') || !inspected.root)) fail(400, 'Vite 项目请包含 package.json 和构建后的 dist/ 目录');
       const curatedTwin = catalog.duplicateOf(inspected.entryDigest);
       const uploadTwin = q.workByDigest.get(inspected.digest);
       if (curatedTwin) inspected.checks.push({ id: 'duplicate', state: 'warn', label: '重复检测', detail: `入口页面与馆藏作品「${curatedTwin.title}」（${curatedTwin.modelName}）完全相同，核验时会重点比对。` });
@@ -275,6 +282,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       const row = q.draftByToken.get(key, Date.now());
       return row ? { ...row, dir: join(dirs.drafts, row.id, row.root) } : null;
     },
+    draftTask(id) { return q.draft.get(id)?.task_id ?? null; },
 
     discardDraft(user, id) {
       const row = q.draft.get(id);
