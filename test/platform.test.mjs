@@ -255,4 +255,35 @@ describe('platform lifecycle', () => {
     assert.equal((await fetchContent(upload.scene)).status, 410);
     assert.equal((await call('root', 'DELETE', '/api/works/one/a1')).status, 409, 'curated works are managed in the repository');
   });
+
+  test('user administration is admin-only, guards self-demotion and writes audit', async () => {
+    assert.equal((await call('nobody', 'GET', '/api/admin/users')).status, 401);
+    assert.equal((await call('alice', 'GET', '/api/admin/users')).status, 403);
+
+    const list = await call('root', 'GET', '/api/admin/users');
+    assert.equal(list.status, 200);
+    const alice = list.data.users.find((user) => user.name === 'alice');
+    const root = list.data.users.find((user) => user.name === 'root');
+    assert.ok(alice && root);
+    assert.deepEqual(Object.keys(alice).sort(), ['createdAt', 'id', 'name', 'role'], 'the list never carries salt or hash');
+
+    assert.equal((await call('alice', 'POST', `/api/admin/users/${alice.id}/role`, { role: 'admin' })).status, 403, 'members cannot promote anyone');
+    const promoted = await call('root', 'POST', `/api/admin/users/${alice.id}/role`, { role: 'admin' });
+    assert.equal(promoted.status, 200);
+    assert.equal(promoted.data.user.role, 'admin');
+    assert.equal((await call('alice', 'GET', '/api/admin/users')).status, 200, 'promotion takes effect on the next request');
+
+    const demoted = await call('root', 'POST', `/api/admin/users/${alice.id}/role`, { role: 'member' });
+    assert.equal(demoted.status, 200);
+    assert.equal((await call('alice', 'GET', '/api/admin/users')).status, 403, 'demotion takes effect on the next request');
+
+    assert.equal((await call('root', 'POST', `/api/admin/users/${root.id}/role`, { role: 'member' })).status, 409, 'an admin cannot demote itself');
+    assert.equal((await call('root', 'POST', `/api/admin/users/${alice.id}/role`, { role: 'boss' })).status, 400, 'unknown roles are refused');
+    assert.equal((await call('root', 'POST', '/api/admin/users/nope/role', { role: 'admin' })).status, 404);
+
+    const review = await call('root', 'GET', '/api/review');
+    const entries = review.data.audit.filter((row) => row.action === 'role');
+    assert.ok(entries.length >= 2, 'role changes are written to the audit log');
+    assert.match(entries[0].detail, /alice/);
+  });
 });

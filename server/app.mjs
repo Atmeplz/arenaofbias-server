@@ -1,5 +1,5 @@
 // Wires the platform together: the site (static build + API) and the content handler.
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createArena } from './arena.mjs';
 import { createAuth } from './auth.mjs';
 import { createCapturer } from './capture.mjs';
@@ -40,6 +40,8 @@ export function createPlatform({ config, limits }) {
     "form-action 'self'",
     "frame-ancestors 'self'",
   ].join('; ');
+  // The admin shell shares the site's CSP: it only talks to /api and frames works.
+  const adminDir = resolve(config.admin ?? join(config.dist, '..', 'admin'));
 
   const signedIn = (ctx) => ctx.user ?? fail(401, '请先登录');
   const adminOnly = (ctx) => (signedIn(ctx).role === 'admin' ? ctx.user : fail(403, '仅管理员可以操作'));
@@ -136,6 +138,19 @@ export function createPlatform({ config, limits }) {
     return { works: publicList(library.uploads(), admin), audit: library.auditLog() };
   });
 
+  // Account administration for the admin web app (the CLI in server/cli.mjs does the same).
+  router.on('GET', '/api/admin/users', (ctx) => {
+    adminOnly(ctx);
+    return { users: auth.list() };
+  });
+  router.on('POST', '/api/admin/users/:id/role', async (ctx) => {
+    const admin = adminOnly(ctx);
+    const body = await readJson(ctx.req);
+    const user = auth.setRole(admin, ctx.params.id, String(body.role ?? ''));
+    library.audit(admin, 'role', null, `${user.name} → ${user.role === 'admin' ? '管理员' : '成员'}`);
+    return { user };
+  });
+
   router.on('POST', '/api/arena/matches', async (ctx) => {
     limit.matches(ctx.user?.id ?? ctx.ip);
     const body = await readJson(ctx.req);
@@ -158,6 +173,16 @@ export function createPlatform({ config, limits }) {
       const found = media && resolveInside(library.mediaDir, `/${media[1]}/${media[2]}`);
       if (!found) return sendJson(res, 404, { error: '文件不存在' });
       return streamFile(req, res, found, { 'Cache-Control': 'public, max-age=300', 'Content-Security-Policy': "default-src 'none'" });
+    }
+    // The admin app lives in this repository and takes precedence over the dist fallback.
+    if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+      const found = resolveInside(adminDir, pathname.slice('/admin'.length) || '/');
+      if (!found) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Not found');
+      }
+      const shell = found.file === join(adminDir, 'index.html');
+      return streamFile(req, res, found, { 'Cache-Control': 'no-cache', ...(shell ? { 'Content-Security-Policy': siteCsp, 'Referrer-Policy': 'same-origin' } : {}) });
     }
     const found = resolveInside(config.dist, pathname);
     if (!found) {

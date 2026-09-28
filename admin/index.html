@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#121211">
+<link rel="icon" href="/admin/favicon.svg" type="image/svg+xml">
+<title>管理后台 · 同题异答</title>
+<script>
+// Apply the remembered theme before first paint; dark is the default.
+try { document.documentElement.dataset.theme = localStorage.getItem('admin-theme') || 'dark'; } catch { /* private mode */ }
+</script>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="/admin/admin.js"></script>
+</body>
+</html>

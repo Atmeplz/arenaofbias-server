@@ -16,6 +16,8 @@ export const config = {
   port,
   contentPort,
   dist: resolve(env.DIST_DIR || join(ROOT, 'dist')),
+  // The admin web app: static files served under /admin/, checked into this repo.
+  admin: resolve(env.ADMIN_DIR || join(ROOT, 'admin')),
   dataDir: resolve(env.DATA_DIR || join(ROOT, '.data')),
   // Every work is served from its own origin: {token} must fill a whole host label.
   // Locally *.localhost resolves to this machine; production needs a wildcard domain

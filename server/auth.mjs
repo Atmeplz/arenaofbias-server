@@ -15,6 +15,7 @@ export function createAuth(db, { admins, secureCookies, sessionTtl }) {
   const q = {
     userByKey: db.prepare('SELECT * FROM users WHERE name_key = ?'),
     userById: db.prepare('SELECT * FROM users WHERE id = ?'),
+    listUsers: db.prepare('SELECT * FROM users ORDER BY created_at'),
     insertUser: db.prepare('INSERT INTO users (id, name, name_key, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
     setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
     insertSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
@@ -94,6 +95,20 @@ export function createAuth(db, { admins, secureCookies, sessionTtl }) {
       if (!user) return null;
       q.setRole.run(role, user.id);
       return { ...user, role };
+    },
+
+    // Admin web app: every account with its effective role, never the credentials.
+    list() {
+      return q.listUsers.all().map((user) => ({ id: user.id, name: user.name, role: roleFor(user), createdAt: new Date(user.created_at).toISOString() }));
+    },
+
+    setRole(actor, userId, role) {
+      if (!['admin', 'member'].includes(role)) fail(400, '角色无效');
+      const user = q.userById.get(String(userId ?? ''));
+      if (!user) fail(404, '用户不存在');
+      if (user.id === actor.id) fail(409, '不能修改自己的角色，避免把自己锁在管理端之外');
+      q.setRole.run(role, user.id);
+      return { id: user.id, name: user.name, role };
     },
   };
 }
