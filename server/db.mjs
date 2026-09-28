@@ -137,6 +137,20 @@ const MIGRATIONS = [
    CREATE INDEX matches_datapack_expiry ON matches (datapack_root, expires_at);`,
   `ALTER TABLE votes ADD COLUMN a_correction TEXT;
    ALTER TABLE votes ADD COLUMN b_correction TEXT;`,
+  `ALTER TABLE users ADD COLUMN hash_params TEXT;
+   CREATE TABLE comments (
+     id TEXT PRIMARY KEY,
+     task_id TEXT NOT NULL,
+     work_id TEXT NOT NULL,
+     user_id TEXT REFERENCES users (id) ON DELETE SET NULL,
+     body TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     deleted_at INTEGER
+   );
+   CREATE INDEX comments_visible_work ON comments (task_id, work_id, created_at, id) WHERE deleted_at IS NULL;`,
+  `ALTER TABLE works ADD COLUMN audience TEXT NOT NULL DEFAULT 'show2'
+     CHECK (audience IN ('hidden', 'show1', 'show2', 'both'));
+   CREATE INDEX works_audience ON works (audience, status, task_id) WHERE deleted_at IS NULL;`,
 ];
 
 export function openDatabase(file) {

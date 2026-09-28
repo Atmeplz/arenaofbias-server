@@ -1,7 +1,7 @@
 // Accounts and sessions. Passwords use scrypt; the session token lives only in an
 // HttpOnly cookie and the database keeps its SHA-256.
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { fail, parseCookies } from './http.mjs';
+import { fail, HttpError, parseCookies } from './http.mjs';
 
 const COOKIE = 'sp_session';
 const SCRYPT = { N: 16384, r: 8, p: 1 };
@@ -19,6 +19,7 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
     userById: db.prepare('SELECT * FROM users WHERE id = ?'),
     listUsers: db.prepare('SELECT * FROM users ORDER BY created_at'),
     insertUser: db.prepare('INSERT INTO users (id, name, name_key, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+    upgradeHash: db.prepare('UPDATE users SET salt = ?, hash = ?, hash_params = NULL WHERE id = ?'),
     setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
     setNickname: db.prepare('UPDATE users SET nickname = ? WHERE id = ?'),
     insertSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
@@ -75,8 +76,25 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
       const user = q.userByKey.get(nameKey(String(rawName ?? '')));
       const password = String(rawPassword ?? '').slice(0, 128);
       // Hash even for unknown names so response time does not reveal which accounts exist.
-      const actual = Buffer.from(hashPassword(password, user?.salt ?? DUMMY_SALT), 'hex');
-      if (!user || !timingSafeEqual(actual, Buffer.from(user.hash, 'hex'))) fail(401, '用户名或密码不正确');
+      if (user?.hash_params) {
+        // Malformed legacy params (bad JSON, missing/invalid scrypt fields) must not become a
+        // 500: treat them exactly like a wrong password.
+        try {
+          const { N, r, p, keylen } = JSON.parse(user.hash_params);
+          const actual = scryptSync(password, user.salt, keylen, { N, r, p, maxmem: 64 * 1024 * 1024 });
+          const stored = Buffer.from(user.hash, 'hex');
+          if (actual.length !== stored.length || !timingSafeEqual(actual, stored)) fail(401, '用户名或密码不正确');
+          const salt = randomBytes(16).toString('hex');
+          q.upgradeHash.run(salt, hashPassword(password, salt), user.id);
+          user.hash_params = null;
+        } catch (error) {
+          if (error instanceof HttpError) throw error;
+          fail(401, '用户名或密码不正确');
+        }
+      } else {
+        const actual = Buffer.from(hashPassword(password, user?.salt ?? DUMMY_SALT), 'hex');
+        if (!user || !timingSafeEqual(actual, Buffer.from(user.hash, 'hex'))) fail(401, '用户名或密码不正确');
+      }
       return syncRole(user);
     },
 

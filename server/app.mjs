@@ -5,6 +5,7 @@ import { createArena } from './arena.mjs';
 import { createAuth } from './auth.mjs';
 import { createCapturer } from './capture.mjs';
 import { createCatalog } from './catalog.mjs';
+import { createComments } from './comments.mjs';
 import { EFFORTS, EMOJIS } from './config.mjs';
 import { createContentHandler } from './content.mjs';
 import { openDatabase } from './db.mjs';
@@ -27,6 +28,7 @@ export function createPlatform({ config, limits }) {
   catalog.refresh();
   const auth = createAuth(db, { admins: config.admins, secureCookies: config.secureCookies, cookieSameSite: config.cookieSameSite, sessionTtl: limits.sessionTtl });
   const library = createLibrary({ db, catalog, config, limits });
+  const comments = createComments(db, library);
   const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
   const limit = {
@@ -80,7 +82,7 @@ export function createPlatform({ config, limits }) {
         emojis: EMOJIS,
         limits: { uploadBytes: limits.uploadBytes, coverBytes: limits.coverBytes, pendingPerUser: limits.pendingPerUser, provisionalGames: limits.provisionalGames },
       },
-      works: publicList(uploads, user),
+      works: publicList(uploads.filter((work) => library.visibleTo(work, 'show2')), user),
       questions: questions.all(),
       reactions: library.reactionSummary(user),
       arena: Object.fromEntries(catalog.tasks().map((task) => [task.id, { ...arena.poolStats(task.id), uploads: task.acceptsUploads }])),
@@ -92,6 +94,10 @@ export function createPlatform({ config, limits }) {
 
   const router = createRouter();
   router.on('GET', '/api/bootstrap', (ctx) => bootstrap(ctx.user));
+  router.on('GET', '/api/show1/works', (ctx) => ({
+    works: publicList(library.published('show1'), ctx.user),
+    reactions: library.reactionSummary(ctx.user, 'show1'),
+  }));
 
   router.on('POST', '/api/auth/register', async (ctx) => {
     limit.auth(ctx.ip);
@@ -160,6 +166,30 @@ export function createPlatform({ config, limits }) {
     limit.write(user.id);
     const body = await readJson(ctx.req);
     return library.react(user, ctx.params.task, ctx.params.id, String(body.emoji ?? ''));
+  });
+  router.on('GET', '/api/works/:task/:work/comments', (ctx) => ({
+    comments: comments.list(ctx.user, ctx.params.task, ctx.params.work),
+  }));
+  router.on('POST', '/api/works/:task/:work/comments', async (ctx) => {
+    const user = signedIn(ctx);
+    limit.write(user.id);
+    const body = await readJson(ctx.req);
+    return { comment: comments.create(user, ctx.params.task, ctx.params.work, body.body) };
+  });
+  router.on('DELETE', '/api/comments/:id', (ctx) => {
+    const user = signedIn(ctx);
+    limit.write(user.id);
+    comments.remove(user, ctx.params.id);
+    return { ok: true };
+  });
+  router.on('GET', '/api/works/:id/calibration', (ctx) => ({
+    calibration: library.getCalibration(ctx.user, ctx.params.id),
+  }));
+  router.on('PATCH', '/api/works/:id/calibration', async (ctx) => {
+    const user = signedIn(ctx);
+    limit.write(user.id);
+    const body = await readJson(ctx.req);
+    return { calibration: library.setCalibration(user, ctx.params.id, body.calibration) };
   });
 
   router.on('GET', '/api/me', (ctx) => {

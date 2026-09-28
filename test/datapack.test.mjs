@@ -141,10 +141,14 @@ test('an old database migrates votes as legacy without inventing identity snapsh
   const file = join(root, 'platform.db');
   const old = new DatabaseSync(file);
   try {
-    old.exec(`CREATE TABLE matches (id TEXT PRIMARY KEY, user_id TEXT, task_id TEXT NOT NULL, a_work TEXT NOT NULL, b_work TEXT NOT NULL,
+    old.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL, salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+      nickname TEXT NOT NULL DEFAULT '');
+      CREATE TABLE matches (id TEXT PRIMARY KEY, user_id TEXT, task_id TEXT NOT NULL, a_work TEXT NOT NULL, b_work TEXT NOT NULL,
       a_token TEXT UNIQUE, b_token TEXT UNIQUE, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, choice TEXT, decided_at INTEGER);
       CREATE TABLE votes (id TEXT PRIMARY KEY, match_id TEXT UNIQUE, user_id TEXT, task_id TEXT NOT NULL, a_work TEXT NOT NULL,
       b_work TEXT NOT NULL, pair_key TEXT NOT NULL, choice TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE works (id TEXT PRIMARY KEY, status TEXT NOT NULL, task_id TEXT NOT NULL, deleted_at INTEGER);
       INSERT INTO matches VALUES ('old', NULL, 'one', 'a1', 'b1', 'ma', 'mb', 1, 9999999999999, 'a', 2);
       INSERT INTO votes VALUES ('old-vote', 'old', NULL, 'one', 'a1', 'b1', 'one:a1+b1', 'a', 2);
       PRAGMA user_version = 3;`);
@@ -158,7 +162,7 @@ test('an old database migrates votes as legacy without inventing identity snapsh
     assert.equal(vote.identity_source, 'legacy');
     assert.equal(vote.a_identity, null);
     assert.equal(vote.a_correction, null);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

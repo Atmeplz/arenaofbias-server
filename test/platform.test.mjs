@@ -1,10 +1,12 @@
 // Platform rules: ranking, upload inspection and the upload → review → blind vote lifecycle.
 import assert from 'node:assert/strict';
+import { scryptSync } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { createPlatform } from '../server/app.mjs';
@@ -78,6 +80,70 @@ test('cross-site sessions use the configured cookie policy and require HTTPS', (
     assert.match(headers.get('Set-Cookie'), /SameSite=None; Max-Age=0; Secure$/);
     assert.equal(auth.userFrom(req), null);
   } finally { db.close(); }
+});
+
+test('v6 migrates legacy password hashes on first successful login', () => {
+  const root = mkdtempSync(join(tmpdir(), 'legacy-auth-'));
+  const file = join(root, 'platform.db');
+  const legacy = new DatabaseSync(file);
+  const salt = '0123456789abcdef0123456789abcdef';
+  const oldHash = scryptSync('correct horse', salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString('hex');
+  legacy.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL, salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+    nickname TEXT NOT NULL DEFAULT '');
+    CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users (id),
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+    CREATE TABLE works (id TEXT PRIMARY KEY, status TEXT NOT NULL, task_id TEXT NOT NULL, deleted_at INTEGER);
+    PRAGMA user_version = 5;`);
+  legacy.prepare('INSERT INTO users (id, name, name_key, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run('legacy-user', 'olduser', 'olduser', 'member', salt, oldHash, Date.now());
+  legacy.close();
+  const db = openDatabase(file);
+  try {
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'comments'").get());
+    const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
+    db.prepare('UPDATE users SET hash_params = ? WHERE id = ?').run(JSON.stringify({ N: 32768, r: 8, p: 1, keylen: 64 }), 'legacy-user');
+    assert.throws(() => auth.login('olduser', 'wrong password'), /用户名或密码不正确/);
+    assert.equal(db.prepare('SELECT hash_params FROM users WHERE id = ?').get('legacy-user').hash_params !== null, true);
+    assert.equal(auth.login('olduser', 'correct horse').id, 'legacy-user');
+    const upgraded = db.prepare('SELECT salt, hash, hash_params FROM users WHERE id = ?').get('legacy-user');
+    assert.equal(upgraded.hash_params, null);
+    assert.notEqual(upgraded.salt, salt);
+    assert.equal(upgraded.hash.length, 64);
+    assert.equal(auth.login('olduser', 'correct horse').id, 'legacy-user');
+    const standard = auth.register('newuser', 'correct horse');
+    const before = db.prepare('SELECT salt, hash FROM users WHERE id = ?').get(standard.id);
+    auth.login('newuser', 'correct horse');
+    assert.deepEqual(db.prepare('SELECT salt, hash FROM users WHERE id = ?').get(standard.id), before);
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('malformed legacy hash_params are treated as a wrong password, never a 500', () => {
+  const root = mkdtempSync(join(tmpdir(), 'legacy-auth-'));
+  const file = join(root, 'platform.db');
+  const setup = new DatabaseSync(file);
+  setup.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL, salt TEXT NOT NULL, hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+    nickname TEXT NOT NULL DEFAULT '');
+    CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users (id),
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+    CREATE TABLE works (id TEXT PRIMARY KEY, status TEXT NOT NULL, task_id TEXT NOT NULL, deleted_at INTEGER);
+    PRAGMA user_version = 5;`);
+  setup.close();
+  const db = openDatabase(file);
+  try {
+    const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
+    auth.register('brokenjson', 'correct horse');
+    db.prepare("UPDATE users SET hash_params = 'not json' WHERE name_key = 'brokenjson'").run();
+    auth.register('badparams', 'correct horse');
+    db.prepare("UPDATE users SET hash_params = '{\"N\":\"x\"}' WHERE name_key = 'badparams'").run();
+    for (const name of ['brokenjson', 'badparams']) {
+      assert.throws(() => auth.login(name, 'correct horse'), (error) => error.status === 401 && /用户名或密码不正确/.test(error.message));
+    }
+    // The row is left untouched so a fixed hash_params can still be migrated later.
+    assert.equal(db.prepare("SELECT hash_params FROM users WHERE name_key = 'brokenjson'").get().hash_params, 'not json');
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 describe('ranking', () => {
@@ -315,6 +381,73 @@ describe('platform lifecycle', () => {
     assert.equal((await call('bob', 'GET', '/api/leaderboard?task=one')).data.totals.votes, 2, 'votes involving the questioned work drop out');
   });
 
+  test('comments belong only to listed works and can be removed by their author or an admin', async () => {
+    const path = `/api/works/one/${upload.id}/comments`;
+    const preflight = await fetch(base + path, { method: 'OPTIONS', headers: {
+      origin: base, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type',
+    } });
+    assert.equal(preflight.status, 204);
+    assert.equal((await call('guest', 'GET', path)).status, 404, 'questioned upload is not listed');
+    assert.equal((await call('root', 'POST', `/api/works/one/${upload.id}/review`, { status: 'verified' })).status, 200);
+    assert.equal((await call('guest', 'POST', path, { body: 'hello' })).status, 401);
+    assert.equal((await call('bob', 'POST', path, { body: 'hello' }, { origin: false })).status, 403);
+    for (const body of ['', ' ', 'x'.repeat(281), 7]) {
+      assert.equal((await call('bob', 'POST', path, { body })).status, 400);
+    }
+    const created = await call('bob', 'POST', path, { body: '  喜欢这个作品  ' });
+    assert.equal(created.status, 200);
+    assert.equal(created.data.comment.body, '喜欢这个作品');
+    assert.equal(created.data.comment.author, 'bob');
+    const id = created.data.comment.id;
+    const listed = await call('guest', 'GET', path);
+    assert.equal(listed.status, 200);
+    assert.equal(listed.data.comments[0].id, id);
+    assert.equal(listed.data.comments[0].canDelete, false);
+    assert.equal((await call('alice', 'DELETE', `/api/comments/${id}`)).status, 403);
+    assert.equal((await call('bob', 'DELETE', `/api/comments/${id}`)).status, 200);
+    assert.deepEqual((await call('guest', 'GET', path)).data.comments, []);
+    assert.ok(platform.db.prepare('SELECT deleted_at FROM comments WHERE id = ?').get(id).deleted_at);
+    assert.equal((await call('bob', 'DELETE', `/api/comments/${id}`)).status, 404);
+
+    const curated = await call('alice', 'POST', '/api/works/one/a1/comments', { body: '馆藏评论' });
+    assert.equal(curated.status, 200);
+    assert.equal((await call('root', 'DELETE', `/api/comments/${curated.data.comment.id}`)).status, 200);
+    const match = await call('guest', 'POST', '/api/arena/matches', { task: 'one' });
+    assert.equal(match.status, 200);
+    assert.deepEqual(Object.keys(match.data).sort(), ['a', 'b', 'counted', 'id', 'task'], 'blind match carries no comments');
+  });
+
+  test('calibration preserves Show1 framing and camera independently without changing trial reports', async () => {
+    const path = `/api/works/${upload.id}/calibration`;
+    const preflight = await fetch(base + path, { method: 'OPTIONS', headers: {
+      origin: base, 'Access-Control-Request-Method': 'PATCH', 'Access-Control-Request-Headers': 'content-type',
+    } });
+    assert.equal(preflight.status, 204);
+    const framing = { width: 1280, height: 720, zoom: 1.25, offsetX: -0.1, offsetY: 0.2 };
+    const camera = { position: [1, 2, 3], target: [0, 0, 0] };
+    assert.equal((await call('guest', 'GET', path)).data.calibration, null);
+    assert.equal((await call('guest', 'PATCH', path, { calibration: { framing } })).status, 401);
+    assert.equal((await call('bob', 'PATCH', path, { calibration: { framing } })).status, 403);
+    assert.equal((await call('alice', 'PATCH', path, { calibration: { framing } }, { origin: false })).status, 403);
+    for (const invalid of [{ zoom: 5 }, { offsetX: 2 }, { offsetY: -2 }, { width: 2.5 }]) {
+      assert.equal((await call('alice', 'PATCH', path, { calibration: { framing: { ...framing, ...invalid } } })).status, 400);
+    }
+    assert.equal((await call('alice', 'PATCH', path, { calibration: { camera: { position: [1, 2], target: [0, 0, 0] } } })).status, 400);
+    assert.equal((await call('alice', 'PATCH', path, { calibration: { framing } })).status, 200);
+    assert.deepEqual((await call('root', 'PATCH', path, { calibration: { camera } })).data.calibration, { framing, camera });
+    assert.deepEqual((await call('guest', 'GET', path)).data.calibration, { framing, camera });
+    const publicWork = (await call('guest', 'GET', '/api/bootstrap')).data.works.find((work) => work.id === upload.id);
+    assert.deepEqual(publicWork.calibration, { framing, camera });
+    assert.equal(publicWork.trial, undefined);
+    const stored = JSON.parse(platform.db.prepare('SELECT trial FROM works WHERE id = ?').get(upload.id).trial);
+    assert.equal(stored.loaded, true);
+    assert.equal(stored.loadMs, 120);
+    assert.deepEqual(stored.calibration, { framing, camera });
+    assert.deepEqual((await call('alice', 'PATCH', path, { calibration: { framing: null } })).data.calibration, { camera });
+    assert.equal((await call('root', 'PATCH', path, { calibration: null })).data.calibration, null);
+    assert.equal((await call('guest', 'GET', '/api/works/a1/calibration')).status, 404, 'curated works use their own data package');
+  });
+
   test('only the author or an admin can delete an upload', async () => {
     assert.equal((await call('bob', 'DELETE', `/api/works/one/${upload.id}`)).status, 403);
     assert.equal((await call('alice', 'DELETE', `/api/works/one/${upload.id}`)).status, 200);
@@ -470,5 +603,26 @@ describe('platform lifecycle', () => {
     assert.equal(deleted.receivedReactions.total, 0);
     assert.equal(deleted.activity.total, 4, 'past submissions remain part of personal activity');
 
+  });
+
+  test('imported works stay out of both public lists until admin chooses a site', async () => {
+    const staged = await call('alice', 'POST', '/api/drafts?task=one&name=legacy.html', '<!doctype html><html><head><title>Legacy</title></head><body><h1>Legacy</h1></body></html>', { raw: true });
+    assert.equal(staged.status, 200);
+    const submitted = await call('alice', 'POST', '/api/works', { draftId: staged.data.draft.id, confirmed: true, title: 'Legacy', modelId: 'm-a', tool: 'CLI' });
+    assert.equal(submitted.status, 200, JSON.stringify(submitted.data));
+    const id = submitted.data.work.id;
+    platform.db.prepare("UPDATE works SET audience = 'hidden' WHERE id = ?").run(id);
+    const path = `/api/works/one/${id}`;
+    assert.ok(!(await call('guest', 'GET', '/api/bootstrap')).data.works.some((work) => work.id === id));
+    assert.ok(!(await call('guest', 'GET', '/api/show1/works')).data.works.some((work) => work.id === id));
+    assert.equal((await call('bob', 'POST', `${path}/reactions`, { emoji: '👍' })).status, 409);
+    assert.equal((await call('guest', 'GET', `${path}/comments`)).status, 404);
+    assert.equal((await call('root', 'POST', `${path}/review`, { status: 'verified' })).status, 400);
+    assert.equal((await call('bob', 'POST', `${path}/review`, { status: 'verified', audience: 'show1' })).status, 403);
+    assert.equal((await call('root', 'POST', `${path}/review`, { status: 'verified', audience: 'show1' })).status, 200);
+    assert.ok(!(await call('guest', 'GET', '/api/bootstrap')).data.works.some((work) => work.id === id));
+    assert.ok((await call('guest', 'GET', '/api/show1/works')).data.works.some((work) => work.id === id));
+    assert.equal((await call('guest', 'GET', `${path}/comments`)).status, 200);
+    assert.equal((await call('guest', 'GET', '/api/bootstrap')).data.arena.one.works, 2);
   });
 });

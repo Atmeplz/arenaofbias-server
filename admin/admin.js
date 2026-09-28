@@ -222,7 +222,7 @@ function workRow(w) {
   return `<article class="work-row" data-status="${esc(w.status)}">
     ${thumb(w)}
     <div class="work-main">
-      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}${statusBadge(w.status, w.reason)}</p>
+      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未公开迁入</span>' : ''}</p>
       <h3>${esc(w.title)}</h3>
       <p class="work-meta">${esc(taskTitle(w.task))} · ${esc(w.tool)} · ${formatDate(w.addedAt)} · 投稿者 ${esc(w.owner ?? '已注销的用户')}</p>
       ${w.reason ? `<p class="work-reason">${icon('alert')}<span>${esc(w.reason)}</span></p>` : ''}
@@ -292,6 +292,7 @@ function openReview(w) {
           <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">保持声明：${esc(w.modelName)}</option>${options}</select></label>
           <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${esc(w.effort)}" placeholder="默认 / 未设置"></label>
         </div>
+        ${w.audience === 'hidden' ? '<label class="field"><span class="field-label">审核通过后展示在</span><select class="input" name="audience"><option value="hidden">先不发布</option><option value="show1">Show1</option><option value="show2">Show2</option><option value="both">两个网站</option></select></label>' : ''}
         <label class="field"><span class="field-label">说明<small>标记存疑时必填，作者与访客都能看到</small></span><textarea class="input" name="reason" rows="3" maxlength="500">${esc(w.status === 'questioned' ? w.reason : '')}</textarea></label>
         <p class="form-error" role="alert"></p>
         <div class="sheet-actions">
@@ -314,6 +315,7 @@ function openReview(w) {
     }
     if (!decide) return;
     const body = { status: decide.dataset.decide, reason: form.reason.value, effort: form.effort.value };
+    if (w.audience === 'hidden' && body.status === 'verified') body.audience = form.audience.value;
     if (form.modelId.value) body.modelId = form.modelId.value;
     $$('[data-decide]', form).forEach((b) => { b.disabled = true; });
     try {
@@ -403,7 +405,7 @@ function worksView() {
           <td><time>${formatTime(w.addedAt)}</time></td>
           <td class="c-actions"><div class="actions">
             <button class="btn sm" data-review="${esc(w.id)}">审核</button>
-            ${w.status !== 'verified' ? `<button class="btn sm primary" data-verify="${esc(w.id)}" title="通过验证">${icon('check')}通过</button>` : ''}
+            ${w.status !== 'verified' && w.audience !== 'hidden' ? `<button class="btn sm primary" data-verify="${esc(w.id)}" title="通过验证">${icon('check')}通过</button>` : ''}
             ${w.status !== 'questioned' ? `<button class="btn sm" data-question="${esc(w.id)}" title="标记存疑">${icon('alert')}存疑</button>` : ''}
             <button class="icon-btn" data-delete="${esc(w.id)}" title="删除作品" aria-label="删除「${esc(w.title)}」">${icon('trash')}</button>
           </div></td>

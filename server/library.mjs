@@ -13,6 +13,22 @@ const token = (prefix) => `${prefix}${randomBytes(16).toString('hex')}`;
 const workId = () => `up-${[...randomBytes(8)].map((byte) => (byte % 36).toString(36)).join('')}`;
 const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 const clip = (value, max) => String(value ?? '').normalize('NFKC').trim().slice(0, max);
+const plainObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
+
+function validFraming(value) {
+  if (!plainObject(value)) return false;
+  const ranges = { width: [320, 3840], height: [240, 3840], zoom: [0.25, 4], offsetX: [-1, 1], offsetY: [-1, 1] };
+  return Object.keys(value).length === 5 && Object.entries(ranges).every(([key, [min, max]]) =>
+    typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= min && value[key] <= max)
+    && Number.isInteger(value.width) && Number.isInteger(value.height);
+}
+
+function validCamera(value) {
+  if (!plainObject(value) || Object.keys(value).sort().join(',') !== 'position,target') return false;
+  const vector = (item) => Array.isArray(item) && item.length === 3 && item.every((n) =>
+    typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1e7);
+  return vector(value.position) && vector(value.target);
+}
 const COVER_TYPES = [
   { ext: 'png', mime: 'image/png', test: (b) => b.readUInt32BE(0) === 0x89504e47 },
   { ext: 'jpg', mime: 'image/jpeg', test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
@@ -56,9 +72,10 @@ export function createLibrary({ db, catalog, config, limits }) {
       source_name, root, entry, file_count, bytes, digest, checks, trial, cover, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     review: db.prepare(`UPDATE works SET status = ?, status_reason = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?,
-      reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
+      audience = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
     remove: db.prepare('UPDATE works SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?'),
     captures: db.prepare('UPDATE works SET captures = ? WHERE id = ?'),
+    calibration: db.prepare('UPDATE works SET trial = ?, updated_at = ? WHERE id = ?'),
     reaction: db.prepare('SELECT 1 FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
     addReaction: db.prepare('INSERT INTO reactions (task_id, work_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)'),
     dropReaction: db.prepare('DELETE FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
@@ -75,6 +92,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       id: row.id,
       curated: false,
       status: row.status,
+      audience: row.audience,
       reason: row.status_reason,
       title: row.title,
       summary: row.summary,
@@ -123,8 +141,11 @@ export function createLibrary({ db, catalog, config, limits }) {
   // Directories left behind by an interrupted upload.
   for (const name of readdirSync(dirs.drafts)) if (!q.draft.get(name)) rmSync(join(dirs.drafts, name), { recursive: true, force: true });
 
-  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir);
-  const isInteractive = (work) => Boolean(work && work.status !== 'questioned');
+  const visibleTo = (work, site = 'show2') => Boolean(work?.curated ? site === 'show2' : work && work.audience !== 'hidden' &&
+    (work.audience === site || work.audience === 'both'));
+  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir && visibleTo(work));
+  const isInteractive = (work) => Boolean(work && work.status !== 'questioned' &&
+    (visibleTo(work, 'show1') || visibleTo(work, 'show2')));
 
   function reactionsOf(taskId, id) {
     return Object.fromEntries(q.workReactions.all(taskId, id).map((row) => [row.emoji, row.n]));
@@ -194,6 +215,7 @@ export function createLibrary({ db, catalog, config, limits }) {
   return {
     isEligible,
     isInteractive,
+    visibleTo,
     originOf,
     audit,
     mediaDir: dirs.media,
@@ -211,6 +233,9 @@ export function createLibrary({ db, catalog, config, limits }) {
     },
     uploads() {
       return q.works.all().map(fromRow);
+    },
+    published(site) {
+      return q.works.all().map(fromRow).filter((work) => work.status === 'verified' && visibleTo(work, site));
     },
     uploadsOf(userId) {
       return q.worksOfOwner.all(userId).map(fromRow);
@@ -232,6 +257,7 @@ export function createLibrary({ db, catalog, config, limits }) {
         tool: work.tool,
         note: work.note,
         status: work.status,
+        ...(privileged ? { audience: work.audience } : {}),
         reason: work.reason,
         owner: work.ownerName,
         mine: Boolean(viewer && viewer.id === work.ownerId),
@@ -242,8 +268,38 @@ export function createLibrary({ db, catalog, config, limits }) {
         cover: work.cover ? `media/${work.id}/${work.cover}` : null,
         files: work.files,
         bytes: work.bytes,
+        calibration: work.trial.calibration ?? null,
         ...(privileged ? { checks: work.checks, trial: work.trial, sourceName: work.sourceName, root: work.root, entry: work.entry, reviewer: work.reviewerName } : {}),
       };
+    },
+
+    getCalibration(viewer, id) {
+      const row = q.work.get(id);
+      if (!row || ((row.status !== 'verified' || row.audience === 'hidden') && viewer?.id !== row.owner_id && viewer?.role !== 'admin')) fail(404, '作品不存在');
+      return JSON.parse(row.trial).calibration ?? null;
+    },
+
+    setCalibration(user, id, patch) {
+      const row = q.work.get(id);
+      if (!row) fail(404, '作品不存在');
+      if (row.owner_id !== user.id && user.role !== 'admin') fail(403, '只能校准自己的作品');
+      if (patch !== null && (!plainObject(patch) || !Object.keys(patch).length ||
+        Object.keys(patch).some((key) => !['framing', 'camera'].includes(key)) ||
+        (Object.hasOwn(patch, 'framing') && patch.framing !== null && !validFraming(patch.framing)) ||
+        (Object.hasOwn(patch, 'camera') && patch.camera !== null && !validCamera(patch.camera)))) fail(400, '校准数据无效');
+      const trial = JSON.parse(row.trial);
+      const calibration = { ...(trial.calibration ?? {}) };
+      if (patch === null) delete trial.calibration;
+      else {
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === null) delete calibration[key];
+          else calibration[key] = value;
+        }
+        if (Object.keys(calibration).length) trial.calibration = calibration;
+        else delete trial.calibration;
+      }
+      q.calibration.run(JSON.stringify(trial), Date.now(), id);
+      return trial.calibration ?? null;
     },
 
     // ---- drafts: stage → trial load → submit --------------------------------------------
@@ -343,8 +399,12 @@ export function createLibrary({ db, catalog, config, limits }) {
       if (status === 'questioned' && !reason) fail(400, '标记存疑时请写明原因，作者和访客都会看到');
       const who = body.modelId !== undefined || body.modelName !== undefined ? identity(body) : work;
       const effort = body.effort !== undefined ? effortOf(body.effort) : work.effort;
+      const audience = body.audience === undefined ? work.audience : String(body.audience);
+      if (!['hidden', 'show1', 'show2', 'both'].includes(audience)) fail(400, '展示站点无效');
+      if (work.audience === 'hidden' && status === 'verified' && audience === 'hidden') fail(400, '请选择审核通过后展示的网站');
+      if (audience !== 'hidden' && status !== 'verified' && work.audience === 'hidden') fail(400, '隐藏作品须先审核通过才能发布');
       const now = Date.now();
-      q.review.run(status, status === 'verified' ? '' : reason, who.modelId, who.modelName, who.vendor, effort, admin.id, now, now, id);
+      q.review.run(status, status === 'verified' ? '' : reason, who.modelId, who.modelName, who.vendor, effort, audience, admin.id, now, now, id);
       const updated = upload(taskId, id);
       const labels = { verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证' };
       audit(admin, status, updated, [labels[status], reason].filter(Boolean).join('：'));
@@ -375,11 +435,13 @@ export function createLibrary({ db, catalog, config, limits }) {
       return { counts: reactionsOf(taskId, id), mine };
     },
 
-    reactionSummary(user) {
+    reactionSummary(user, site = 'show2') {
       const counts = {};
-      for (const row of q.reactionCounts.all()) (counts[`${row.task_id}/${row.work_id}`] ??= {})[row.emoji] = row.n;
+      const shown = (row) => Boolean(catalog.work(row.task_id, row.work_id)) && site === 'show2' ||
+        visibleTo(upload(row.task_id, row.work_id), site);
+      for (const row of q.reactionCounts.all()) if (shown(row)) (counts[`${row.task_id}/${row.work_id}`] ??= {})[row.emoji] = row.n;
       const mine = {};
-      if (user) for (const row of q.myReactions.all(user.id)) (mine[`${row.task_id}/${row.work_id}`] ??= []).push(row.emoji);
+      if (user) for (const row of q.myReactions.all(user.id)) if (shown(row)) (mine[`${row.task_id}/${row.work_id}`] ??= []).push(row.emoji);
       return { counts, mine };
     },
 

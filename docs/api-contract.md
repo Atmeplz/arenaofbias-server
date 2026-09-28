@@ -68,7 +68,7 @@
 | 桶 | 额度 | 计数键 | 作用于 |
 | --- | --- | --- | --- |
 | auth | 10 次 / 分钟 | 客户端 IP | 注册、登录 |
-| write | 120 次 / 分钟 | 用户 ID（未登录时为 IP） | 投稿提交、投票、表情 |
+| write | 120 次 / 分钟 | 用户 ID（未登录时为 IP） | 投稿提交、投票、表情、评论写入/删除、校准写回 |
 | drafts | 12 次 / 10 分钟 | 用户 ID | 上传草稿 |
 | matches | 60 次 / 分钟 | 用户 ID（未登录时为 IP） | 创建对战 |
 
@@ -96,10 +96,12 @@
 | `effort` | string | 强度档位，大小写不敏感地归入 `Low / Medium / High / XHigh / Max`；未知值原样保留 |
 | `tool` | string | 生成工具（≤40 字） |
 | `status` | `unverified` \| `verified` \| `questioned` | 审核状态，默认 `unverified` |
+| `audience` | `hidden` \| `show1` \| `show2` \| `both` | 展示站点，v7 新增；普通作品默认 `show2`，历史迁入作品为 `hidden` |
 | `reason` | string | 审核理由；`verified` 时恒为空串 |
 | `reviewerName` / `reviewedAt` | string / null | 审核人与审核时间 |
 | `contentKey` | string | 作品永久内容令牌（`w` + 32 位十六进制），作品 origin 的子域名 |
 | `checks` / `trial` | object | 上传检查报告 / 试加载探针数据（仅作者与管理员可见） |
+| `trial.calibration` | object / null | Show1 逐作品展示设置，含可选的 `framing`（画布）与 `camera`（3D 视角）；没有时缺省 |
 | `captures` | object | 截图映射 `{条件id: 文件名}`，由自动截图写回 |
 | `cover` | string / null | 封面文件名（`cover.png` / `cover.jpg` / `cover.webp`） |
 | `files` / `bytes` / `digest` | number / number / string | 文件数、解压后字节数、全包 SHA-256 |
@@ -130,6 +132,7 @@
 - `scene` 为完整 origin URL（末尾带 `/`），iframe 直接加载。
 - `captures` / `cover` 为相对 API 站点的路径（前端拼 base URL）；无封面时 `cover` 为 `null`。
 - **特权字段**（仅作者本人或管理员可见，普通访客与匿名者不返回）：`checks`、`trial`、`sourceName`、`root`、`entry`、`reviewer`。
+- 投稿作品公开视图另有 `calibration`（对象或 `null`），从 `trial.calibration` 提取；`trial` 其余数据仍为特权字段。馆藏作品不使用这套 Show1 校准数据，也不增加该字段；Show2 画廊沿用自己的展示方式。
 
 馆藏作品（公开视图字段更少，注意**没有 `scene`**，见 2.7 待拍板）：
 
@@ -151,7 +154,7 @@
 
 ### 2.4 用户（user）
 
-数据库字段：`id`（16 位十六进制）、`name`（显示名）、`name_key`（NFKC + trim + 小写的唯一键）、`role`（`member` / `admin`）、`salt` / `hash`（scrypt N=16384, r=8, p=1）、`created_at`。
+数据库字段：`id`（16 位十六进制）、`name`（显示名）、`name_key`（NFKC + trim + 小写的唯一键）、`role`（`member` / `admin`）、`salt` / `hash`（标准 scrypt N=16384, r=8, p=1, keylen=32）、`hash_params`（可空 JSON）、`created_at`。`hash_params=NULL` 表示标准参数；迁入的旧用户可记录 `{ "N": 32768, "r": 8, "p": 1, "keylen": 64 }`。旧用户成功登录后立即换新 salt/hash 并清空 `hash_params`；标准用户无额外哈希或查询。
 
 HTTP 公开视图恒为：
 
@@ -185,6 +188,10 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 - `verified`：进入对战池与排行。
 - `questioned`：存疑。必须填写理由（作者与访客均可见）；退出对战池与排行，且**不可再互动**（表情返回 `409`）。
 - 删除为软删除（`deleted_at`），馆藏作品不可经 API 删除（`409`，须在数据仓库移除）。
+
+### 2.8 评论（comment）
+
+v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`、`user_id`（账号删除后可空）、`body`、`created_at`（毫秒）、`deleted_at`（可空）。评论依附于已上架的馆藏作品或 `verified` 投稿；馆藏作品不在 SQLite 的 `works` 表中，因此 `work_id` 不设外键。删除评论只设置 `deleted_at`，公开读取不返回已删除项。
 
 ---
 
@@ -528,6 +535,45 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 成功 `200`：`{ "question": { "id": "q-<16hex>", "title": "…", "summary": "…", "prompt": "…", "tags": ["UI"], "templates": ["static", "vite"], "owner": "作者昵称", "version": 1, "community": true, "createdAt": "…ISO…", "date": "YYYY-MM-DD" } }`。作者从会话读取，不能由客户端指定。错误：`401` / `400` / `429`。社区题目通过 `bootstrap.questions` 公开、通过 `me.questions` 返回本人题目，立即接受关联投稿；其 `arena` 初始为空池。
 
+### 3.15 作品评论
+
+评论只属于已上架作品：馆藏作品或状态为 `verified` 的投稿。盲测对局创建响应与未揭晓页面均不带评论；前端应在展示已揭晓作品时单独请求评论。
+
+**`GET /api/works/:task/:work/comments`** —— 公开读取最近 100 条未删除评论，按时间倒序。认证、限流均无。成功 `200`：
+
+```json
+{ "comments": [ { "id": "<24hex>", "body": "喜欢这个作品", "createdAt": "…ISO…",
+  "author": "alice", "mine": false, "canDelete": false } ] }
+```
+
+`author` 为当前昵称（无昵称时为用户名）；账号删除后为 `null`。`mine` / `canDelete` 随当前会话变化。作品不存在或未上架时返回 `404`。
+
+**`POST /api/works/:task/:work/comments`** —— 登录发布评论，使用 `write` 桶。请求 `{ "body": "喜欢这个作品" }`；去除首尾空白后须为 1–280 字。成功 `200`：`{ "comment": <上述评论对象> }`。错误：`401` / `400` / `404` / `429`。
+
+**`DELETE /api/comments/:id`** —— 评论本人或管理员软删除，使用 `write` 桶。成功 `200`：`{ "ok": true }`；无须请求体。错误：`401` / `403`（非本人且非管理员）/ `404`（不存在或已删除）/ `429`。
+
+### 3.16 Show1 投稿作品校准
+
+校准只适用于 SQLite `works` 表中的投稿作品。数据存于 `trial.calibration`，作品原始 HTML 不改写；馆藏作品与 Show2 画廊展示方式不受该字段控制。
+
+**`GET /api/works/:id/calibration`** —— 已上架投稿公开读取；未上架投稿仅作者或管理员可读。不限流。成功 `200`：`{ "calibration": <对象或 null> }`；不存在、馆藏作品或无权读取未上架投稿时返回 `404`。
+
+**`PATCH /api/works/:id/calibration`** —— 投稿作者或管理员写回，使用 `write` 桶。请求 `{ "calibration": { "framing": <对象或 null>, "camera": <对象或 null> } }`；可只提交其中一项，另一项保持原值。`{ "calibration": null }` 清空全部校准。成功 `200`：`{ "calibration": <写入后的对象或 null> }`。错误：`401` / `403` / `404` / `400`（结构或数值无效）/ `429`。
+
+- `framing`：`{ "width": 1280, "height": 720, "zoom": 1, "offsetX": 0, "offsetY": 0 }`。宽、高须为整数，分别在 320–3840、240–3840；`zoom` 为 0.25–4；两个 offset 为 -1–1。五项都必须存在且为有限数，不接受额外字段。
+- `camera`：`{ "position": [1, 2, 3], "target": [0, 0, 0] }`。两项各为恰好三个有限数，绝对值小于 10⁷，不接受额外字段。
+- 分别传 `framing: null` 或 `camera: null` 可清除对应部分。`trial` 中原有的试加载报告保持不变；投稿作品公开视图只额外暴露 `calibration`，不暴露整个 `trial`。
+
+### 3.17 Show1 历史作品的审核与站点展示（schema v7）
+
+`works.audience` 为 `hidden` / `show1` / `show2` / `both`，旧作品和普通投稿默认 `show2`。Show1 迁入作品一律为 `status=unverified, audience=hidden`；只有管理员审核通过并指定 `audience` 后才公开。`hidden` 作品仅在管理员 `GET /api/review` 中列出，不进入 `/api/bootstrap`、Show1 作品列表、评论、表情或盲评池。后台审核视图可取得随机作品内容令牌用于私密试加载；令牌本身具有预览能力，不应公开转发。
+
+**`GET /api/show1/works`** —— Show1 公开作品列表，不需要登录、无限流。成功 `200`：`{ "works": [<作品公开视图>], "reactions": { "counts": {}, "mine": {} } }`。只返回 `verified` 且 `audience=show1|both` 的 SQLite 作品；不会把它们加入 Show2 的 `/api/bootstrap.works` 或 Show2 盲评池。Show1 题目定义由数据包负责，此接口不创建题目。
+
+**`POST /api/works/:task/:id/review`** —— 原审核端点可附加 `audience: "show1" | "show2" | "both"`。对 `hidden` 迁入作品，设置 `status=verified` 时必须同时指定非 `hidden` 的 audience；否则 `400`。仍需管理员身份，遵循现有 Origin 校验与审核错误格式；成功返回的管理员作品视图含 `audience`。后台审核页提供展示站点选项。
+
+迁移脚本与执行参数见 `docs/show1-migration.md`。Show1 七道新题的目标 ID 固定为 `show1-001`、`show1-002`、`show1-003`、`show1-005` 至 `show1-008`；004 沿用 `chinese-architecture`。七道题的正式定义进入数据包前，作品仍可在后台审核，但前端没有完整题目元数据。
+
 ---
 
 ## 4. 数据包契约（`dist/data.json`）
@@ -596,11 +642,9 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 以下各项**在当前代码中不存在**，列入契约仅为双方对齐方向；实现前以单独 PR 补充正式文档：
 
 1. **votes 表 `source` 列**：区分票源——娱乐面 / 正式盲评 / 历史迁移。配套迁移追加至 `MIGRATIONS`，排行统计按票源加权或过滤的规则另行拍板。关联现状：当前匿名投票完全不落库（见 3.9），娱乐面开放匿名计票需一并拍板。
-2. **users 表 `email` / `email_verified_at` / `hash_params` 列**：邮箱与验证时间、密码哈希参数留档（为将来哈希参数升级做平滑迁移）。
+2. **users 表 `email` / `email_verified_at` 列**：邮箱与验证时间；`hash_params` 已在 v6 实现。
 3. **猜模型端点（模一把）**：移植自 Show1——先投票后猜模型或猜对加成的玩法端点，形态待定。
-4. **评论端点**：作品评论的读写接口，表结构与审核规则待定。
-5. **校准写回端点**：画布 / 视角校准结果写回馆藏或投稿作品的接口。
-6. **邮箱验证码与 Turnstile**：注册 / 登录的人机校验与邮箱验证流程；上线后 auth 桶限流策略预计同步调整。
+4. **邮箱验证码与 Turnstile**：注册 / 登录的人机校验与邮箱验证流程；上线后 auth 桶限流策略预计同步调整。
 
 ---
 
