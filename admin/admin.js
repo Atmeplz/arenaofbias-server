@@ -48,7 +48,7 @@ const currentTheme = () => (document.documentElement.dataset.theme === 'light' ?
 function applySystemTheme() {
   document.documentElement.dataset.system = state.system;
   document.documentElement.dataset.theme = store.get(`admin-theme-${state.system}`)
-    || (state.system === 'gallery' ? store.get('admin-theme') || 'dark' : 'light');
+    || (state.system === 'arena' ? 'light' : 'dark');
   syncThemeUi();
 }
 function syncThemeUi() {
@@ -171,7 +171,7 @@ function busy(button, text = '处理中…') {
 
 // App state. `data` is the static catalog (task titles, model list) read from /data.json.
 const state = { user: undefined, data: null, works: null, audit: [], users: null, worksFilter: 'all', error: '',
-  system: store.get('admin-system') === 'arena' ? 'arena' : 'gallery', adminWorks: [], workTotal: 0,
+  system: ['arena', 'common'].includes(store.get('admin-system')) ? store.get('admin-system') : 'gallery', adminWorks: [], workTotal: 0,
   workCache: new Map(), workKey: '', workLoading: false, trafficLoading: false, requestId: 0,
   sidebarCollapsed: store.get('admin-sidebar-collapsed') === '1',
   workPage: 1, workTask: '', workStatus: '', workShow: '', workSearch: '', traffic: null,
@@ -270,7 +270,7 @@ function workRow(w) {
   return `<article class="work-row" data-status="${esc(w.status)}">
     ${thumb(w)}
     <div class="work-main">
-      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未展示</span>' : ''}</p>
+      <p class="work-model"><b>${esc(w.modelName)}</b>${w.effort ? `<span class="badge">${esc(w.effort)}</span>` : ''}<span class="badge">${esc(FACE_LABEL[face])}·${faceOn(w, face) ? '已展示' : '待审'}</span>${statusBadge(w.status, w.reason)}${w.audience === 'hidden' ? '<span class="badge">未展示</span>' : ''}</p>
       <h3>${esc(w.title)}</h3>
       <p class="work-meta">${esc(taskTitle(w.task))} · ${esc(w.tool)} · ${formatDate(w.addedAt)} · 投稿者 ${esc(w.owner ?? '已注销的用户')}</p>
       ${w.reason ? `<p class="work-reason">${icon('alert')}<span>${esc(w.reason)}</span></p>` : ''}
@@ -403,32 +403,41 @@ function openReview(w) {
 // ---- views -----------------------------------------------------------------------------------
 const app = () => $('#app');
 const routeParts = () => location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
+// Face systems carry only their own pages; everything shared lives in the common area.
 const TABS = [
   { id: 'review', label: '审核', icon: 'shield' },
   { id: 'works', label: '作品', icon: 'file' },
   { id: 'tasks', label: '题目', icon: 'guide' },
+];
+const COMMON_TABS = [
+  { id: 'dashboard', label: '仪表盘', icon: 'chart' },
+  { id: 'upload', label: '上传入口', icon: 'inbox' },
   { id: 'users', label: '用户', icon: 'users' },
   { id: 'traffic', label: '流量', icon: 'clock' },
 ];
 const ARENA_NAV = [
-  ['总览', [['traffic', '仪表盘', 'chart', '#/traffic'], ['flow', '数据流水', 'list', '#/review/log']]],
-  ['内容管理', [['works', '作品管理', 'file', '#/works'], ['tasks', '题目管理', 'guide', '#/tasks'], ['review', '收件箱', 'inbox', '#/review'], ['users', '用户管理', 'users', '#/users']]],
+  ['内容管理', [['works', '作品管理', 'file', '#/works'], ['tasks', '题目管理', 'guide', '#/tasks'], ['review', '审核', 'shield', '#/review']]],
   ['玩法', [['guess', '模一把', 'game', '#/guess'], ['activity', '活动管理', 'calendar', '#/activity']]],
 ];
-const systemSwitch = () => `<div class="system-switch" role="group" aria-label="管理系统"><button type="button" data-system="gallery" aria-pressed="${state.system === 'gallery'}">展览馆系统</button><button type="button" data-system="arena" aria-pressed="${state.system === 'arena'}">竞技场系统</button></div>`;
+const systemSwitch = () => `<div class="system-switch" role="group" aria-label="管理系统"><button type="button" data-system="gallery" aria-pressed="${state.system === 'gallery'}">展览馆系统</button><button type="button" data-system="arena" aria-pressed="${state.system === 'arena'}">竞技场系统</button><button type="button" data-system="common" aria-pressed="${state.system === 'common'}">通用后台</button></div>`;
+
+const routeAllowed = (route, sub) => state.system === 'common'
+  ? COMMON_TABS.some((tab) => tab.id === route)
+  : TABS.some((tab) => tab.id === route) || (state.system === 'arena' && ['guess', 'activity'].includes(route));
+const tabsForSystem = () => state.system === 'common' ? COMMON_TABS : TABS;
 
 function topbar(route) {
   if (state.system === 'arena') return `<header class="topbar arena-topbar">
-    <div class="arena-page-mark"><span class="eyebrow">偏见试验场 / 管理工作台</span><strong>${esc(route === 'review' && routeParts()[1] === 'log' ? '数据流水' : route === 'traffic' ? '仪表盘' : route === 'guess' ? '模一把' : route === 'activity' ? '活动管理' : TABS.find((tab) => tab.id === route)?.label ?? '管理后台')}</strong></div>
+    <div class="arena-page-mark"><span class="eyebrow">偏见试验场 / 管理工作台</span><strong>${esc(TABS.find((tab) => tab.id === route)?.label ?? '竞技场')}</strong></div>
     <span class="topbar-space"></span>${systemSwitch()}${themeButton()}
     <span class="user-chip" title="当前账号"><span class="avatar" aria-hidden="true">${esc(state.user.name.slice(0, 1).toUpperCase())}</span><span class="user-name">${esc(state.user.name)}</span></span>
     <button class="icon-btn" data-logout title="退出登录" aria-label="退出登录">${icon('logout')}</button>
   </header>`;
   return `<header class="topbar">
-    <a class="brand" href="#/review">${LOGO}<span class="brand-name">同题异答<b>管理后台</b></span></a>
+    <a class="brand" href="${state.system === 'common' ? '#/dashboard' : '#/review'}">${LOGO}<span class="brand-name">同题异答<b>${state.system === 'common' ? '通用后台' : '管理后台'}</b></span></a>
     ${systemSwitch()}
     <nav class="tabs" aria-label="管理">
-      ${TABS.map((tab) => `<a href="#/${tab.id}"${tab.id === route ? ' aria-current="page"' : ''}>${icon(tab.icon)}${tab.label}</a>`).join('')}
+      ${tabsForSystem().map((tab) => `<a href="#/${tab.id}"${tab.id === route ? ' aria-current="page"' : ''}>${icon(tab.icon)}${tab.label}</a>`).join('')}
     </nav>
     <span class="topbar-space"></span>
     ${themeButton()}
@@ -437,11 +446,11 @@ function topbar(route) {
   </header>`;
 }
 function arenaSidebar(route, sub) {
-  const selected = route === 'review' && sub === 'log' ? 'flow' : route;
+  const selected = route;
   return `<aside class="workspace-sidebar" aria-label="竞技场工作台导航">
-    <div class="sidebar-head"><a class="sidebar-brand" href="#/traffic">${LOGO}<span class="sidebar-copy"><b>偏见试验场</b><small>竞技场管理工作台</small></span></a>
+    <div class="sidebar-head"><a class="sidebar-brand" href="#/works">${LOGO}<span class="sidebar-copy"><b>偏见试验场</b><small>竞技场管理工作台</small></span></a>
       <button class="icon-btn sidebar-collapse" type="button" data-sidebar-collapse aria-label="${state.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}" aria-expanded="${!state.sidebarCollapsed}" title="${state.sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}">${icon('panel')}</button></div>
-    <nav class="sidebar-nav">${ARENA_NAV.map(([group, items]) => `<div class="sidebar-group"><span class="sidebar-caption">${group}</span>${items.map(([id, label, glyph, href]) => `<a href="${href}" title="${label}" ${selected === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span class="sidebar-label">${label}</span>${id === 'review' && state.works ? `<i>${state.works.filter((w) => w.status !== 'questioned' && !faceOn(w)).length}</i>` : ''}</a>`).join('')}</div>`).join('')}</nav>
+    <nav class="sidebar-nav">${ARENA_NAV.map(([group, items]) => `<div class="sidebar-group"><span class="sidebar-caption">${group}</span>${items.map(([id, label, glyph, href]) => `<a href="${href}" title="${label}" ${selected === id ? 'aria-current="page"' : ''}>${icon(glyph)}<span class="sidebar-label">${label}</span>${id === 'review' && state.works ? `<i>${state.works.filter((w) => w.status !== 'questioned' && !faceOn(w, 'arena')).length}</i>` : ''}</a>`).join('')}</div>`).join('')}</nav>
     <div class="sidebar-foot"><span>共享数据 · 双系统门面</span><small>竞技场 / 管理后台</small></div>
   </aside>`;
 }
@@ -530,12 +539,9 @@ function reviewView(sub) {
   const works = state.works ?? [];
   const face = state.system;
   const count = (kind) => works.filter((w) => kind === 'questioned' ? w.status === 'questioned' : kind === 'shown' ? faceOn(w, face) : !faceOn(w, face) && w.status !== 'questioned').length;
-  const titles = new Map(works.map((w) => [w.id, w.title]));
   let list;
   if (tab === 'log') {
-    list = state.audit.length
-      ? `<ol class="audit">${state.audit.map((row) => `<li><time>${formatTime(row.at)}</time><span class="audit-actor">${esc(row.actor)}</span><b>${esc(ACTIONS[row.action] ?? row.action)}</b><span class="audit-work">${row.work ? esc(titles.get(row.work) ?? `${row.work}（已删除）`) : ''}${row.detail ? ` · ${esc(row.detail)}` : ''}</span></li>`).join('')}</ol>`
-      : '<p class="muted">还没有记录。</p>';
+    list = auditList(state.audit.length);
   } else {
     const rows = works.filter((w) => tab === 'questioned' ? w.status === 'questioned' : tab === 'shown' ? faceOn(w, face) : !faceOn(w, face) && w.status !== 'questioned')
       .sort((a, b) => (tab === 'pending' ? Date.parse(a.addedAt) - Date.parse(b.addedAt) : Date.parse(b.addedAt) - Date.parse(a.addedAt)));
@@ -547,11 +553,39 @@ function reviewView(sub) {
     ? '决定哪些作品上展览馆展示；盲测的进出在竞技场系统里审，两边互不影响。'
     : '决定哪些作品进入盲测；展览馆的上下架在展览馆系统里审，两边互不影响。';
   return `${pageHero('审核管理', '审核', lead, [['待审', count('pending')], ['已展示', count('shown')], ['存疑', count('questioned')]])}
-  ${inboxPanel()}
   <section class="block">
     <nav class="seg review-tabs" aria-label="审核分类">${Object.entries(REVIEW_TABS).map(([id, text]) => `<a href="#/review/${id}"${id === tab ? ' aria-current="page"' : ''}>${text}${id === 'log' ? '' : `<span>${count(id)}</span>`}</a>`).join('')}</nav>
     ${state.works === null ? skeleton(5) : list}
   </section>`;
+}
+
+// -- common area: dashboard + unified upload -----------------------------------
+const auditList = (limit) => {
+  const titles = new Map((state.works ?? []).map((w) => [w.id, w.title]));
+  return state.audit.length
+    ? `<ol class="audit">${state.audit.slice(0, limit).map((row) => `<li><time>${formatTime(row.at)}</time><span class="audit-actor">${esc(row.actor)}</span><b>${esc(ACTIONS[row.action] ?? row.action)}</b><span class="audit-work">${row.work ? esc(titles.get(row.work) ?? `${row.work}（已删除）`) : ''}${row.detail ? ` · ${esc(row.detail)}` : ''}</span></li>`).join('')}</ol>`
+    : '<p class="muted">还没有记录。</p>';
+};
+
+function dashboardView() {
+  const works = state.works;
+  const pending = (face) => (works ? works.filter((w) => w.status !== 'questioned' && !faceOn(w, face)).length : '—');
+  const traffic = state.traffic;
+  return `${pageHero('总览', '仪表盘', '两个系统共用的后台：作品从这里统一上传，两边的审核进度和访问概况在这里看。', [
+    ['投稿作品', works ? works.length : '—'], ['展览馆待审', pending('gallery')], ['竞技场待审', pending('arena')], ['用户', traffic ? traffic.users.total : '—']])}
+  <section class="block dashboard-actions">
+    <button class="btn primary" type="button" data-goto-system="gallery">${icon('file')}进展览馆系统审核</button>
+    <button class="btn primary" type="button" data-goto-system="arena">${icon('shield')}进竞技场系统审核</button>
+    <a class="btn" href="#/upload">${icon('inbox')}统一上传入口</a>
+  </section>
+  ${traffic ? `<section class="block"><h2>访问近 14 日</h2><div class="traffic-bars" aria-label="近 14 日访问量">${traffic.daily.slice(-14).map((d) => { const max = Math.max(1, ...traffic.daily.slice(-14).map((x) => x.pv)); return `<div class="traffic-day" title="${d.day}：${d.pv} PV，${d.uniqueIps} 位独立访客"><div class="traffic-bar" style="height:${Math.max(2, d.pv / max * 100)}%"></div><span>${d.day.slice(5)}</span></div>`; }).join('')}</div><p class="fine">近 30 日新注册 ${traffic.users.new} 人，累计 ${traffic.users.total} 人。<a href="#/traffic">完整访问概况</a></p></section>` : `<section class="block" aria-busy="true"><h2>访问近 14 日</h2>${skeleton(6, 'bar')}</section>`}
+  <section class="block"><h2>最近操作</h2>${state.works === null ? skeleton(4) : auditList(12)}</section>`;
+}
+
+function uploadView() {
+  const entries = state.inbox ?? [];
+  return `${pageHero('统一上传入口', '上传', '两个系统共用的代传收件箱：上传暂存、预览、登记入库。登记只是入库——之后在展览馆系统审展示，在竞技场系统审盲测。', [['暂存', entries.length]])}
+  ${inboxPanel()}`;
 }
 
 const WORKS_FILTERS = { all: '全部', unverified: '未验证', verified: '已验证', questioned: '存疑' };
@@ -834,6 +868,7 @@ async function reload({ navigation = false } = {}) {
   const requestId = ++state.requestId;
   const [route = 'review'] = routeParts();
   const system = state.system;
+  if (!routeAllowed(route)) { location.hash = system === 'common' ? '#/dashboard' : '#/review'; return; }
   let key = '';
   if (route === 'works') {
     if (navigation) applyWorksHash();
@@ -860,7 +895,10 @@ async function reload({ navigation = false } = {}) {
     } else if (route === 'traffic') {
       state.traffic = await api('admin/traffic?days=30');
       state.trafficLoading = false;
-    } else if (route === 'review') await Promise.all([loadReview(), loadInbox()]);
+    } else if (route === 'dashboard') {
+      await Promise.all([loadReview(), state.traffic ? Promise.resolve() : api('admin/traffic?days=30').then((data) => { state.traffic = data; })]);
+    } else if (route === 'upload') await loadInbox();
+    else if (route === 'review') await loadReview();
     if (requestId !== state.requestId) return;
     state.error = '';
   } catch (error) {
@@ -879,9 +917,10 @@ function render({ soft = false, world = false } = {}) {
   if (!state.user) return loginView();
   if (state.user.role !== 'admin') return forbiddenView();
   const [route = 'review', sub] = routeParts();
-  const known = TABS.some((tab) => tab.id === route) || (state.system === 'arena' && ['guess', 'activity'].includes(route));
-  if (!known) { location.hash = '#/review'; return; }
-  const body = route === 'works' ? systemWorksView() : route === 'tasks' ? tasksView() : route === 'traffic' ? trafficView() : route === 'users' ? usersView() : ['guess', 'activity'].includes(route) ? placeholderView(route) : reviewView(sub);
+  if (!routeAllowed(route, sub)) { location.hash = state.system === 'common' ? '#/dashboard' : '#/review'; return; }
+  const body = state.system === 'common'
+    ? route === 'upload' ? uploadView() : route === 'users' ? usersView() : route === 'traffic' ? trafficView() : dashboardView()
+    : route === 'works' ? systemWorksView() : route === 'tasks' ? tasksView() : ['guess', 'activity'].includes(route) ? placeholderView(route) : reviewView(sub);
   const content = `${state.error ? `<p class="form-error page-error">${esc(state.error)}</p>` : ''}${body}`;
   const shellKey = `${state.system}/${route}/${sub || ''}`;
   const currentMain = $('main.page', app());
@@ -920,7 +959,7 @@ function render({ soft = false, world = false } = {}) {
     renderedWorkSignature = workSignature;
     renderedContent = content;
   }
-  document.title = `${route === 'guess' ? '模一把' : route === 'activity' ? '活动管理' : TABS.find((tab) => tab.id === route).label} · 管理后台`;
+  document.title = `${route === 'guess' ? '模一把' : route === 'activity' ? '活动管理' : tabsForSystem().find((tab) => tab.id === route)?.label ?? '管理后台'} · 管理后台`;
   syncThemeUi();
 }
 
@@ -933,6 +972,7 @@ async function boot() {
     state.user = null;
   }
   if (state.user?.role === 'admin') {
+    applySystemTheme();
     state.works = null;
     state.users = null;
     state.workLoading = routeParts()[0] === 'works';
@@ -949,7 +989,7 @@ document.addEventListener('click', async (e) => {
   if (system && state.system !== system.dataset.system) {
     state.system = system.dataset.system; store.set('admin-system', state.system); state.workPage = 1;
     applySystemTheme();
-    if (state.system === 'gallery' && ['guess', 'activity'].includes(routeParts()[0])) { location.hash = '#/review'; return; }
+    if (!routeAllowed(routeParts()[0])) location.hash = state.system === 'common' ? '#/dashboard' : '#/review';
     if (routeParts()[0] === 'works') {
       const cached = state.workCache.get(worksQuery().toString());
       state.adminWorks = cached?.works ?? [];
@@ -958,6 +998,14 @@ document.addEventListener('click', async (e) => {
     }
     render({ world: true });
     reload();
+    return;
+  }
+  const gotoSystem = e.target.closest('[data-goto-system]');
+  if (gotoSystem && state.system !== gotoSystem.dataset.gotoSystem) {
+    state.system = gotoSystem.dataset.gotoSystem; store.set('admin-system', state.system);
+    applySystemTheme();
+    if (routeParts()[0] === 'review') { render({ world: true }); reload(); }
+    else location.hash = '#/review';
     return;
   }
   if (e.target.closest('[data-sidebar-collapse]')) {
