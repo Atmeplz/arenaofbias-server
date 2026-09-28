@@ -4,6 +4,10 @@
 
 ## 当前状态（2026-09-28）
 
+- **本轮版本与历史投票保护已完成**：随本轮英文提交，未 push。安装器按 datapack.json 写不可变版本目录，activate 切换链接，prune 默认预演、按最后对局过期时间加一小时宽限期回收；真实版本目录与身份快照持久绑定 matches，重启后仍可读取旧对局资源。votes 原始快照不变，显式更正单独保存并审计，旧票明确 legacy。追加迁移到 user_version 5。
+- bootstrap 返回实际产物 SHA、原始目录摘要、API v1、后端提交；馆藏相关新写操作拒绝已声明的不匹配版本。共享零依赖下载器、PR 检查、管理员纠错命令已接入。默认读取 `.datapack/current`，无该路径时兼容 dist。
+- 本轮语法检查 25 脚本、npm test 23 项、固定包/新本地包两次真实 HTTP 跨仓 smoke 通过；浏览器验收见前端归档。原 `.data` 未动，临时数据在 output/release-review-data。详见 `docs/archive/2026-09-28-versioned-matches-wsnxxxs.md`。
+
 - 本地 `codex/gallery-integration` 接入 same-prompt-gallery 当前平台：新增社区题目发布与目录、昵称、本人题目与近 365 天活跃热图/收到表情、Vite 构建目录投稿。题目表和昵称列只在 MIGRATIONS 末尾追加，原迁移不变。
 - `SITE_ORIGINS` 现在同时控制可信前端凭据 CORS、API 写请求和作品嵌入；支持 OPTIONS 预检，完整 origin 精确匹配。Cookie 默认 Lax，跨站 HTTPS 使用 `COOKIE_SAME_SITE=None` + `COOKIE_SECURE=1`；前端 fetch/XHR 必须 include 凭据，媒体相对路径按 API 站点根解析。
 - 后端功能已在本地 `codex/gallery-integration` 提交 `51eb3cb`（`Support the gallery frontend and trusted origins`），配套前端分支功能提交为 `1ee5dae`；均未获 push 授权。本轮文档续补另以英文 commit 提交，记录见 `docs/archive/2026-09-28-gallery-integration-docs-followup-wsnxxxs.md`。

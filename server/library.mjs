@@ -198,16 +198,16 @@ export function createLibrary({ db, catalog, config, limits }) {
     audit,
     mediaDir: dirs.media,
 
-    work(taskId, id) {
-      return catalog.work(taskId, id) ?? upload(taskId, id);
+    work(taskId, id, snapshot = null) {
+      return (snapshot ?? catalog.snapshot()).work(taskId, id) ?? upload(taskId, id);
     },
     byContentKey(key) {
       const row = q.workByKey.get(key);
       return row ? fromRow(row) : null;
     },
     // Curated works plus verified uploads: the pool blind comparisons draw from.
-    eligible(taskId) {
-      return [...catalog.works(taskId), ...q.worksOfTask.all(taskId).map(fromRow).filter(isEligible)];
+    eligible(taskId, snapshot = null) {
+      return [...(snapshot ?? catalog.snapshot()).works(taskId), ...q.worksOfTask.all(taskId).map(fromRow).filter(isEligible)];
     },
     uploads() {
       return q.works.all().map(fromRow);
@@ -282,6 +282,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       const row = q.draftByToken.get(key, Date.now());
       return row ? { ...row, dir: join(dirs.drafts, row.id, row.root) } : null;
     },
+    draftTask(id) { return q.draft.get(id)?.task_id ?? null; },
 
     discardDraft(user, id) {
       const row = q.draft.get(id);

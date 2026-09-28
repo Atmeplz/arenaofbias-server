@@ -1,6 +1,7 @@
 // Platform configuration. Every value can be overridden with an environment variable;
 // the defaults suit a single machine running `npm start` after `npm run build`.
 import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,7 +16,7 @@ export const config = {
   host: env.HOST || '127.0.0.1',
   port,
   contentPort,
-  dist: resolve(env.DIST_DIR || join(ROOT, 'dist')),
+  dist: resolve(env.DIST_DIR || (existsSync(join(ROOT, '.datapack', 'current')) ? join(ROOT, '.datapack', 'current') : join(ROOT, 'dist'))),
   dataDir: resolve(env.DATA_DIR || join(ROOT, '.data')),
   // Every work is served from its own origin: {token} must fill a whole host label.
   // Locally *.localhost resolves to this machine; production needs a wildcard domain

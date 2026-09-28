@@ -3,8 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "fetch:datapack": "node scripts/datapack.mjs fetch",
+    "activate:datapack": "node scripts/datapack.mjs activate",
+    "prune:datapack": "node scripts/datapack.mjs prune",
+    "check": "node scripts/check-syntax.mjs",
     "start": "node server/index.mjs",
     "admin": "node server/cli.mjs",
+    "correct:vote": "node scripts/correct-vote.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "engines": {

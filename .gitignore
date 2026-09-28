@@ -1,4 +1,6 @@
 .data/
 node_modules/
 dist/
+.datapack/
+output/
 *.log

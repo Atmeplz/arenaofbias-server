@@ -9,7 +9,7 @@
 // entries with few comparisons, prefer entries of similar strength, and avoid the previous
 // round's works, the voter's own uploads and pairs the voter has already judged.
 import { randomBytes } from 'node:crypto';
-import { entityKey } from './catalog.mjs';
+import { effortKey, entityKey, modelKey } from './catalog.mjs';
 import { transaction } from './db.mjs';
 import { fail } from './http.mjs';
 import { rankEntries } from './ranking.mjs';
@@ -17,35 +17,46 @@ import { rankEntries } from './ranking.mjs';
 const MATCH = { tierWidth: 150, sameTierRate: 0.9, blowoutGap: 400, rerolls: 2 };
 export const pairKey = (taskId, a, b) => `${taskId}:${[a, b].sort().join('+')}`;
 const token = () => `m${randomBytes(16).toString('hex')}`;
+const identityOf = (work) => ({
+  taskId: work.taskId, id: work.id, curated: work.curated,
+  title: work.title, modelId: work.modelId, modelName: work.modelName,
+  vendor: work.vendor, effort: work.effort, effortKey: effortKey(work.effort),
+  modelKey: modelKey(work), configKey: entityKey(work), ownerId: work.ownerId,
+});
+const fromIdentity = (text) => text ? JSON.parse(text) : null;
 
 export function createArena({ db, catalog, library, limits, random = Math.random }) {
   const q = {
-    insertMatch: db.prepare('INSERT INTO matches (id, user_id, task_id, a_work, b_work, a_token, b_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    insertMatch: db.prepare('INSERT INTO matches (id, user_id, task_id, a_work, b_work, a_token, b_token, created_at, expires_at, datapack_root, datapack_version, a_identity, b_identity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     match: db.prepare('SELECT * FROM matches WHERE id = ?'),
     lastMatch: db.prepare('SELECT * FROM matches WHERE user_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1'),
     matchByToken: db.prepare('SELECT * FROM matches WHERE (a_token = ? OR b_token = ?) AND expires_at > ?'),
     decide: db.prepare('UPDATE matches SET choice = ?, decided_at = ? WHERE id = ? AND choice IS NULL'),
     purge: db.prepare('DELETE FROM matches WHERE expires_at < ? AND id NOT IN (SELECT match_id FROM votes)'),
-    insertVote: db.prepare('INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    insertVote: db.prepare('INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice, created_at, a_identity, b_identity, identity_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     votedPair: db.prepare('SELECT 1 FROM votes WHERE user_id = ? AND pair_key = ?'),
     votedPairs: db.prepare('SELECT pair_key FROM votes WHERE user_id = ? AND task_id = ?'),
     votes: db.prepare('SELECT * FROM votes ORDER BY created_at'),
     votesOfTask: db.prepare('SELECT * FROM votes WHERE task_id = ? ORDER BY created_at'),
     userVotes: db.prepare('SELECT COUNT(*) AS n FROM votes WHERE user_id = ?'),
+    correctA: db.prepare('UPDATE votes SET a_correction = ? WHERE id = ?'),
+    correctB: db.prepare('UPDATE votes SET b_correction = ? WHERE id = ?'),
+    vote: db.prepare('SELECT * FROM votes WHERE id = ?'),
+    audit: db.prepare('INSERT INTO audit (at, actor_id, actor_name, action, task_id, work_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   };
 
   // The leaderboard only changes when votes or work states change; callers invalidate.
   let cache = new Map();
   const invalidate = () => { cache = new Map(); };
 
-  // Votes that still count: both works are verified and present now. Questioning or deleting
-  // a work removes its votes from the ranking; restoring it brings them back.
-  function countedVotes(taskId) {
+  // Eligibility follows current moderation/catalog membership; identity and score keys
+  // come from the vote's saved snapshot and never drift with later label edits.
+  function countedVotes(taskId, snapshot = null) {
     const works = new Map();
     const lookup = (task, id) => {
       const key = `${task}/${id}`;
       if (!works.has(key)) {
-        const work = library.work(task, id);
+        const work = library.work(task, id, snapshot);
         works.set(key, library.isEligible(work) ? work : null);
       }
       return works.get(key);
@@ -54,7 +65,11 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     for (const row of taskId ? q.votesOfTask.all(taskId) : q.votes.all()) {
       const a = lookup(row.task_id, row.a_work);
       const b = lookup(row.task_id, row.b_work);
-      if (a && b) votes.push({ a, b, choice: row.choice, userId: row.user_id ?? `vote:${row.id}` });
+      if (a && b) votes.push({
+        a: fromIdentity(row.a_correction) ?? fromIdentity(row.a_identity) ?? a,
+        b: fromIdentity(row.b_correction) ?? fromIdentity(row.b_identity) ?? b,
+        choice: row.choice, userId: row.user_id ?? `vote:${row.id}`,
+      });
     }
     return votes;
   }
@@ -66,14 +81,14 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     effort: by === 'model' ? '' : work.effort,
   });
 
-  function leaderboard({ task = null, by = 'config' } = {}) {
-    catalog.refresh();
-    const cacheKey = `${catalog.version}|${task ?? '*'}|${by}`;
+  function leaderboard({ task = null, by = 'config', snapshot = null } = {}) {
+    const archive = snapshot ?? catalog.snapshot();
+    const cacheKey = `${archive.version}|${task ?? '*'}|${by}`;
     if (cache.has(cacheKey)) return cache.get(cacheKey);
-    const keyOf = (work) => entityKey(work, by);
-    const votes = countedVotes(task);
+    const keyOf = (work) => by === 'model' ? (work.modelKey ?? modelKey(work)) : (work.configKey ?? entityKey(work));
+    const votes = countedVotes(task, archive);
     const ranked = rankEntries(votes, keyOf, limits);
-    const pool = task ? library.eligible(task) : catalog.tasks().flatMap((t) => library.eligible(t.id));
+    const pool = task ? library.eligible(task, archive) : catalog.tasks().flatMap((t) => library.eligible(t.id, archive));
     const works = new Map();
     for (const work of pool) {
       const key = keyOf(work);
@@ -156,11 +171,11 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     leaderboard,
     poolStats,
 
-    createMatch(user, taskId, previousId) {
-      if (!catalog.task(taskId)) fail(404, '题目不存在');
+    createMatch(user, taskId, previousId, snapshot = catalog.snapshot()) {
+      if (!snapshot.task(taskId) && !catalog.task(taskId)) fail(404, '题目不存在');
       if (random() < 0.02) q.purge.run(Date.now() - 24 * 3600e3);
       const groups = new Map();
-      for (const work of library.eligible(taskId)) {
+      for (const work of library.eligible(taskId, snapshot)) {
         if (user && work.ownerId === user.id) continue;
         const key = entityKey(work);
         if (!groups.has(key)) groups.set(key, []);
@@ -174,13 +189,14 @@ export function createArena({ db, catalog, library, limits, random = Math.random
       if (!candidates.length && avoid.size) candidates = candidatesFor(taskId, groups, voted, new Set());
       if (!candidates.length) fail(409, '这道题的组合你都已经评过了，换一道题试试', 'exhausted');
 
-      const chosen = pick(candidates, leaderboard({ task: taskId }));
+      const chosen = pick(candidates, leaderboard({ task: taskId, snapshot }));
       const [first, second] = chosen.pairs[Math.floor(random() * chosen.pairs.length)];
       const [a, b] = random() < 0.5 ? [first, second] : [second, first];
       const id = randomBytes(12).toString('hex');
       const now = Date.now();
       const tokens = [token(), token()];
-      q.insertMatch.run(id, user?.id ?? null, taskId, a.id, b.id, tokens[0], tokens[1], now, now + limits.matchTtl);
+      q.insertMatch.run(id, user?.id ?? null, taskId, a.id, b.id, tokens[0], tokens[1], now, now + limits.matchTtl,
+        snapshot.root, snapshot.version, JSON.stringify(identityOf(a)), JSON.stringify(identityOf(b)));
       return {
         id,
         task: taskId,
@@ -195,31 +211,61 @@ export function createArena({ db, catalog, library, limits, random = Math.random
       if (!match || match.expires_at <= Date.now() || (match.user_id && match.user_id !== user?.id)) fail(404, '这一组已经失效，请开始新的一组');
       if (match.choice) fail(409, '这一组已经提交过了');
       if (!['a', 'b', 'tie', 'skip'].includes(choice)) fail(400, '选择无效');
-      const a = library.work(match.task_id, match.a_work);
-      const b = library.work(match.task_id, match.b_work);
+      const snapshot = catalog.at(match.datapack_root);
+      const a = library.work(match.task_id, match.a_work, snapshot);
+      const b = library.work(match.task_id, match.b_work, snapshot);
+      const isLegacy = !match.a_identity || !match.b_identity;
+      const aIdentity = fromIdentity(match.a_identity) ?? (a && identityOf(a));
+      const bIdentity = fromIdentity(match.b_identity) ?? (b && identityOf(b));
       let counted = false;
       let reason = choice === 'skip' ? 'skipped' : '';
       transaction(db, () => {
         q.decide.run(choice, Date.now(), match.id);
         if (choice === 'skip') return;
         if (!user) { reason = 'anonymous'; return; }
-        if (!library.isEligible(a) || !library.isEligible(b)) { reason = 'changed'; return; }
-        if (a.ownerId === user.id || b.ownerId === user.id) { reason = 'own'; return; }
+        if (!library.isEligible(library.work(match.task_id, match.a_work)) || !library.isEligible(library.work(match.task_id, match.b_work))) { reason = 'changed'; return; }
+        if (aIdentity?.ownerId === user.id || bIdentity?.ownerId === user.id) { reason = 'own'; return; }
         const key = pairKey(match.task_id, match.a_work, match.b_work);
         if (q.votedPair.get(user.id, key)) { reason = 'duplicate'; return; }
-        q.insertVote.run(randomBytes(12).toString('hex'), match.id, user.id, match.task_id, match.a_work, match.b_work, key, choice, Date.now());
+        q.insertVote.run(randomBytes(12).toString('hex'), match.id, user.id, match.task_id, match.a_work, match.b_work, key, choice, Date.now(),
+          isLegacy ? null : JSON.stringify(aIdentity), isLegacy ? null : JSON.stringify(bIdentity), isLegacy ? 'legacy' : 'snapshot');
         counted = true;
       });
       if (counted) invalidate();
-      const reveal = (work) => (work ? library.toPublic(work, user) : null);
-      return { choice, counted, reason, a: reveal(a), b: reveal(b) };
+      const reveal = (work, identity) => work ? {
+        ...library.toPublic(work, user),
+        ...(identity ? { title: identity.title, model: identity.modelId, modelName: identity.modelName, vendor: identity.vendor, effort: identity.effort } : {}),
+      } : null;
+      return { choice, counted, reason, a: reveal(a, aIdentity), b: reveal(b, bIdentity) };
     },
 
     // The work behind a match token, for the content server.
     workForToken(key) {
       const match = q.matchByToken.get(key, key, Date.now());
       if (!match) return null;
-      return library.work(match.task_id, match.a_token === key ? match.a_work : match.b_work);
+      return library.work(match.task_id, match.a_token === key ? match.a_work : match.b_work, catalog.at(match.datapack_root));
+    },
+
+    // Explicit correction of a saved vote. The caller supplies an authenticated admin
+    // and a reason; the before/after identities are kept in the existing audit table.
+    correctVote(admin, voteId, side, replacement, reason) {
+      if (admin?.role !== 'admin') fail(403, '仅管理员可以操作');
+      if (!['a', 'b'].includes(side) || !String(reason ?? '').trim()) fail(400, '更正侧与原因必填');
+      if (!replacement || typeof replacement !== 'object' || Array.isArray(replacement)
+        || Object.keys(replacement).some((key) => !['modelId', 'modelName', 'vendor', 'effort'].includes(key))) fail(400, '仅可更正模型、厂商和档位');
+      const row = q.vote.get(voteId);
+      if (!row) fail(404, '投票不存在');
+      const original = fromIdentity(row[`${side}_identity`]);
+      if (!original || !row.a_identity || !row.b_identity) fail(409, '旧票没有完整的当时身份快照，不能推断更正');
+      const previous = fromIdentity(row[`${side}_correction`]) ?? original;
+      const next = identityOf({ ...previous, ...replacement, taskId: previous.taskId, id: previous.id, curated: previous.curated, ownerId: previous.ownerId });
+      transaction(db, () => {
+        (side === 'a' ? q.correctA : q.correctB).run(JSON.stringify(next), voteId);
+        q.audit.run(Date.now(), admin.id, admin.name, 'vote-identity-correction', row.task_id, row[`${side}_work`],
+          JSON.stringify({ voteId, side, previous, next, reason: String(reason).trim() }));
+      });
+      invalidate();
+      return next;
     },
 
     votesBy: (userId) => q.userVotes.get(userId).n,

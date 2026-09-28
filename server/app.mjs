@@ -1,5 +1,6 @@
 // Wires the platform together: the site (static build + API) and the content handler.
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createArena } from './arena.mjs';
 import { createAuth } from './auth.mjs';
 import { createCapturer } from './capture.mjs';
@@ -15,6 +16,10 @@ import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
 
 export function createPlatform({ config, limits }) {
+  const serverVersion = process.env.SERVER_VERSION || (() => {
+    try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('..', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch { return 'dev'; }
+  })();
   const db = openDatabase(join(config.dataDir, 'platform.db'));
   const questions = createQuestions(db);
   const profile = createProfile(db);
@@ -48,10 +53,22 @@ export function createPlatform({ config, limits }) {
   const signedIn = (ctx) => ctx.user ?? fail(401, '请先登录');
   const adminOnly = (ctx) => (signedIn(ctx).role === 'admin' ? ctx.user : fail(403, '仅管理员可以操作'));
   const publicList = (works, viewer) => works.map((work) => library.toPublic(work, viewer));
+  const checkDatapack = (ctx, taskId) => {
+    const snapshot = catalog.snapshot();
+    if (!snapshot.task(taskId)) return snapshot; // Community questions are independent of the curated package.
+    const supplied = ctx.req.headers['x-datapack-version'];
+    if (supplied && supplied !== snapshot.commit) fail(409, '馆藏版本已更新，请刷新页面后重试', 'datapack_mismatch');
+    return snapshot;
+  };
 
   function bootstrap(user) {
+    const snapshot = catalog.snapshot();
     const uploads = library.uploads();
     return {
+      datapack: snapshot.commit,
+      catalogDigest: snapshot.catalogDigest,
+      apiVersion: 1,
+      serverVersion,
       user: auth.public(user),
       site: {
         content: config.contentTemplate,
@@ -106,6 +123,7 @@ export function createPlatform({ config, limits }) {
     const user = signedIn(ctx);
     limit.drafts(user.id);
     const task = ctx.url.searchParams.get('task') ?? '';
+    checkDatapack(ctx, task);
     const name = ctx.url.searchParams.get('name') ?? '';
     const buffer = await readBody(ctx.req, limits.uploadBytes);
     return { draft: library.createDraft(user, task, name, buffer, ctx.url.searchParams.get('template')) };
@@ -117,7 +135,9 @@ export function createPlatform({ config, limits }) {
   router.on('POST', '/api/works', async (ctx) => {
     const user = signedIn(ctx);
     limit.write(user.id);
-    const work = library.submit(user, await readJson(ctx.req, 6 * 1024 * 1024));
+    const body = await readJson(ctx.req, 6 * 1024 * 1024);
+    checkDatapack(ctx, library.draftTask(String(body.draftId ?? '')));
+    const work = library.submit(user, body);
     capturer.enqueue(work);
     arena.invalidate();
     return { work: library.toPublic(work, user) };
@@ -157,7 +177,9 @@ export function createPlatform({ config, limits }) {
   router.on('POST', '/api/arena/matches', async (ctx) => {
     limit.matches(ctx.user?.id ?? ctx.ip);
     const body = await readJson(ctx.req);
-    return arena.createMatch(ctx.user, String(body.task ?? ''), body.previous);
+    const task = String(body.task ?? '');
+    const snapshot = checkDatapack(ctx, task);
+    return arena.createMatch(ctx.user, task, body.previous, snapshot);
   });
   router.on('POST', '/api/arena/matches/:id/vote', async (ctx) => {
     limit.write(ctx.user?.id ?? ctx.ip);
@@ -203,10 +225,10 @@ export function createPlatform({ config, limits }) {
         if (!route) fail(404, '接口不存在');
         if (route.methodNotAllowed) fail(405, '不支持这个操作');
         const headers = String(req.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((header) => header.trim()).filter(Boolean);
-        if (headers.some((header) => header !== 'content-type')) fail(403, '请求头无效');
+        if (headers.some((header) => !['content-type', 'x-datapack-version'].includes(header))) fail(403, '请求头无效');
         res.writeHead(204, {
           'Access-Control-Allow-Methods': method,
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Headers': 'Content-Type, X-Datapack-Version',
           'Access-Control-Max-Age': '600',
         });
         return res.end();
