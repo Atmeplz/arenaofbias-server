@@ -338,7 +338,7 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 
 错误：`401` / `403 只能删除自己上传的作品`；`404 作品不存在`；`409 馆藏作品由仓库收录流程管理`（馆藏作品不可经 API 删除）。
 
-### 3.7 审核与互动
+### 3.7 审核、互动与账号管理
 
 **`POST /api/works/:task/:id/review`** —— 审核投稿（仅管理员）
 
@@ -397,7 +397,30 @@ unverified ──审核──▶ verified ──审核──▶ questioned
 }
 ```
 
-`audit` 为审计日志倒序最多 200 条，`action` 取值含 `submit` / `verified` / `questioned` / `unverified` / `delete`。
+`audit` 为审计日志倒序最多 200 条，`action` 取值含 `submit` / `verified` / `questioned` / `unverified` / `delete` / `role`。
+
+**`GET /api/admin/users`** —— 账号列表（仅管理员）
+
+**认证**：管理员。**限流**：无。
+
+成功 `200`（按注册时间升序）：
+
+```json
+{ "users": [ { "id": "…", "name": "alice", "role": "member", "createdAt": "2026-09-27T08:00:00.000Z" } ] }
+```
+
+- 每项仅含 `id` / `name` / `role` / `createdAt`：`name` 为登录用户名（非昵称），`createdAt` 为 ISO 时间；不下发昵称、`name_key` 与凭据（`salt` / `hash`）。
+- `role` 为生效角色：`ADMIN_USERNAMES` 内的账号无论库中存值恒为 `admin`。
+
+错误：`401`（未登录）/ `403 仅管理员可以操作`。
+
+**`POST /api/admin/users/:id/role`** —— 调整账号角色（仅管理员）
+
+**认证**：管理员。**限流**：无。请求体：`{ "role": "admin" }`（取值 `admin` / `member`）。
+
+成功 `200`：`{ "user": { "id": "…", "name": "bob", "role": "admin" } }`，并写审计日志（`action` 为 `role`，`detail` 形如 `bob → 管理员`，无关联题目 / 作品）。
+
+错误：`401` / `403 仅管理员可以操作`；`400 角色无效`；`404 用户不存在`；`409 不能修改自己的角色，避免把自己锁在管理端之外`（防自降权，自己的角色只能由另一名管理员调整）。
 
 ### 3.8 `POST /api/arena/matches` —— 创建盲投对战
 
