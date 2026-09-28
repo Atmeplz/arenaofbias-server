@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { createPlatform } from '../server/app.mjs';
 import { createCatalog } from '../server/catalog.mjs';
 import { limits } from '../server/config.mjs';
-import { openDatabase } from '../server/db.mjs';
+import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -165,7 +165,7 @@ test('an old database migrates votes as legacy without inventing identity snapsh
     assert.equal(vote.a_identity, null);
     assert.equal(vote.a_correction, null);
     assert.equal(vote.source, 'legacy', 'pre-v8 votes stay out of Bradley–Terry');
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -203,6 +203,9 @@ const MIGRATIONS = [
      updated_at INTEGER NOT NULL,
      PRIMARY KEY (task_id, face)
    );`,
+  // 存量作品（Show1 迁入）在展览馆面全部重置为待审：展览馆显示改为逐件审核通过，
+  // 与分面审核的规则一致；竞技场面保持原状（娱乐面走快照，不受影响）。
+  `UPDATE works SET show_gallery = 0, audience = CASE WHEN show_arena = 1 THEN 'show1' ELSE 'hidden' END WHERE deleted_at IS NULL;`,
 ];
 
 // Exported so tests can build databases at an intermediate schema version.

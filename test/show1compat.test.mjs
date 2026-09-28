@@ -132,7 +132,7 @@ test('v8 migrates a v7 database: vote sources, comment sides and the new tables'
   } finally { raw.close(); }
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
     assert.equal(db.prepare("SELECT source FROM votes WHERE id = 'arena-vote'").get().source, 'arena');
     assert.equal(db.prepare("SELECT source FROM votes WHERE id = 'legacy-vote'").get().source, 'legacy');
     assert.equal(db.prepare("SELECT compat_mode FROM votes WHERE id = 'arena-vote'").get().compat_mode, null);

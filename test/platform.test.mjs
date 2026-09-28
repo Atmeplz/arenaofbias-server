@@ -13,7 +13,7 @@ import { createPlatform } from '../server/app.mjs';
 import { createAuth } from '../server/auth.mjs';
 import { limits as defaultLimits } from '../server/config.mjs';
 import { inspectUpload } from '../server/inspect.mjs';
-import { openDatabase } from '../server/db.mjs';
+import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 import { createQuestions } from '../server/questions.mjs';
 import { fitBradleyTerry, rankEntries } from '../server/ranking.mjs';
 
@@ -101,7 +101,7 @@ test('v6 migrates legacy password hashes on first successful login', () => {
   legacy.close();
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'comments'").get());
     const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
     db.prepare('UPDATE users SET hash_params = ? WHERE id = ?').run(JSON.stringify({ N: 32768, r: 8, p: 1, keylen: 64 }), 'legacy-user');

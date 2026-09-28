@@ -25,9 +25,10 @@ test('v9 backfills both switches from every v8 audience and reopens without data
     old.close();
     for (let i = 0; i < 2; i++) {
       const db = openDatabase(file);
-      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+      // v9 按 v8 受众回填两面；v10（分面审核新规）再把存量作品的展览馆面重置为待审。
       assert.deepEqual(db.prepare('SELECT id, show_gallery, show_arena FROM works ORDER BY id').all().map(({ id, show_gallery, show_arena }) => [id, show_gallery, show_arena]), [
-        ['both', 1, 1], ['hidden', 0, 0], ['show1', 0, 1], ['show2', 1, 0],
+        ['both', 0, 1], ['hidden', 0, 0], ['show1', 0, 1], ['show2', 0, 0],
       ]);
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM works').get().n, 4);
       db.close();
