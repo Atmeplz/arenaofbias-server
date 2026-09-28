@@ -101,7 +101,7 @@ test('v6 migrates legacy password hashes on first successful login', () => {
   legacy.close();
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'comments'").get());
     const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
     db.prepare('UPDATE users SET hash_params = ? WHERE id = ?').run(JSON.stringify({ N: 32768, r: 8, p: 1, keylen: 64 }), 'legacy-user');
@@ -337,6 +337,7 @@ describe('platform lifecycle', () => {
     assert.equal(submitted.status, 200);
     upload = submitted.data.work;
     assert.equal(upload.status, 'unverified');
+    assert.deepEqual([...Object.values(platform.db.prepare('SELECT show_gallery, show_arena FROM works WHERE id = ?').get(upload.id))], [1, 1]);
     assert.equal(upload.effort, 'High');
     assert.equal((await fetchContent(upload.scene)).status, 200);
     const boot = await call('bob', 'GET', '/api/bootstrap');
@@ -613,7 +614,7 @@ describe('platform lifecycle', () => {
     const submitted = await call('alice', 'POST', '/api/works', { draftId: staged.data.draft.id, confirmed: true, title: 'Legacy', modelId: 'm-a', tool: 'CLI' });
     assert.equal(submitted.status, 200, JSON.stringify(submitted.data));
     const id = submitted.data.work.id;
-    platform.db.prepare("UPDATE works SET audience = 'hidden' WHERE id = ?").run(id);
+    platform.db.prepare("UPDATE works SET audience = 'hidden', show_gallery = 0, show_arena = 0 WHERE id = ?").run(id);
     const path = `/api/works/one/${id}`;
     assert.ok(!(await call('guest', 'GET', '/api/bootstrap')).data.works.some((work) => work.id === id));
     assert.ok(!(await call('guest', 'GET', '/api/show1/works')).data.works.some((work) => work.id === id));
@@ -625,6 +626,6 @@ describe('platform lifecycle', () => {
     assert.ok(!(await call('guest', 'GET', '/api/bootstrap')).data.works.some((work) => work.id === id));
     assert.ok((await call('guest', 'GET', '/api/show1/works')).data.works.some((work) => work.id === id));
     assert.equal((await call('guest', 'GET', `${path}/comments`)).status, 200);
-    assert.equal((await call('guest', 'GET', '/api/bootstrap')).data.arena.one.works, 2);
+    assert.equal((await call('guest', 'GET', '/api/bootstrap')).data.arena.one.works, 3);
   });
 });

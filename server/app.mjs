@@ -14,6 +14,7 @@ import {
   HttpError, assertSameOrigin, clientIp, createRouter, fail, isTrustedOrigin, rateLimit, readBody, readJson, resolveInside, sendJson, streamFile,
 } from './http.mjs';
 import { createLibrary } from './library.mjs';
+import { createAdmin } from './admin.mjs';
 import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
 import { registerShow1Compat } from './show1compat.mjs';
@@ -31,6 +32,7 @@ export function createPlatform({ config, limits }) {
   catalog.refresh();
   const auth = createAuth(db, { admins: config.admins, secureCookies: config.secureCookies, cookieSameSite: config.cookieSameSite, sessionTtl: limits.sessionTtl });
   const library = createLibrary({ db, catalog, config, limits });
+  const adminService = createAdmin({ db, catalog, library });
   const comments = createComments(db, library);
   const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
@@ -166,6 +168,7 @@ export function createPlatform({ config, limits }) {
   });
   router.on('POST', '/api/works/:task/:id/review', async (ctx) => {
     const admin = adminOnly(ctx);
+    limit.write(admin.id);
     const work = library.review(admin, ctx.params.task, ctx.params.id, await readJson(ctx.req));
     arena.invalidate();
     return { work: library.toPublic(work, admin) };
@@ -222,10 +225,72 @@ export function createPlatform({ config, limits }) {
   });
   router.on('POST', '/api/admin/users/:id/role', async (ctx) => {
     const admin = adminOnly(ctx);
+    limit.write(admin.id);
     const body = await readJson(ctx.req);
     const user = auth.setRole(admin, ctx.params.id, String(body.role ?? ''));
     library.audit(admin, 'role', null, `${user.name} → ${user.role === 'admin' ? '管理员' : '成员'}`);
     return { user };
+  });
+
+  router.on('GET', '/api/admin/works', (ctx) => {
+    adminOnly(ctx);
+    return adminService.works(ctx.url.searchParams);
+  });
+  router.on('POST', '/api/admin/works/:task/:id/face-settings', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const work = library.setFaceSettings(admin, ctx.params.task, ctx.params.id, await readJson(ctx.req));
+    arena.invalidate();
+    return { work };
+  });
+  router.on('POST', '/api/admin/works/:task/:id/calibration', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const body = await readJson(ctx.req);
+    return { task: ctx.params.task, id: ctx.params.id, face: body.face,
+      calibration: library.setFaceCalibration(admin, ctx.params.task, ctx.params.id, body.face, body.calibration) };
+  });
+  router.on('GET', '/api/admin/tasks/:id/editorial', (ctx) => {
+    adminOnly(ctx);
+    return adminService.getEditorial(ctx.params.id, ctx.url.searchParams.get('face'));
+  });
+  router.on('POST', '/api/admin/tasks/:id/editorial', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    return adminService.saveEditorial(admin, ctx.params.id, await readJson(ctx.req));
+  });
+  router.on('GET', '/api/admin/traffic', (ctx) => {
+    adminOnly(ctx);
+    return adminService.traffic(ctx.url.searchParams.get('days'));
+  });
+  router.on('POST', '/api/admin/works/upload', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    limit.drafts(admin.id);
+    const params = ctx.url.searchParams;
+    const task = params.get('task') ?? '';
+    checkDatapack(ctx, task);
+    const gallery = params.get('show_gallery');
+    const arenaFace = params.get('show_arena');
+    if ((gallery !== null && !['0', '1'].includes(gallery)) || (arenaFace !== null && !['0', '1'].includes(arenaFace))) fail(400, '门面开关无效', 'invalid_face_settings');
+    const name = params.get('name') ?? '';
+    const buffer = await readBody(ctx.req, limits.uploadBytes);
+    const draft = library.createDraft(admin, task, name, buffer, params.get('template'));
+    let submitted;
+    try {
+      submitted = library.submit(admin, {
+        draftId: draft.id, confirmed: true, title: params.get('title'), summary: params.get('summary'),
+        modelId: params.get('modelId'), modelName: params.get('modelName'), tool: params.get('tool') || '管理员代传',
+      });
+    } catch (error) {
+      library.discardDraft(admin, draft.id);
+      throw error;
+    }
+    const work = library.review(admin, task, submitted.id, { status: 'verified',
+      show_gallery: gallery === null ? true : gallery === '1', show_arena: arenaFace === null ? true : arenaFace === '1' });
+    capturer.enqueue(work);
+    arena.invalidate();
+    return { work: library.adminWork(work) };
   });
 
   router.on('POST', '/api/arena/matches', async (ctx) => {

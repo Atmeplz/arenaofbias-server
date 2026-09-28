@@ -70,6 +70,7 @@ export function registerShow1Compat(router, deps) {
     dropEmoji: db.prepare('DELETE FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
     addReaction: db.prepare('INSERT OR IGNORE INTO reactions (task_id, work_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)'),
     pageView: db.prepare('INSERT INTO page_views (day, path, ip_hash, created_at) VALUES (?, ?, ?, ?)'),
+    arenaEditorial: db.prepare("SELECT commentary, weights_json FROM task_editorial WHERE task_id = ? AND face = 'arena'"),
   };
 
   const promptOf = (id) => snapshot.prompts.find((prompt) => prompt.id === id) ?? null;
@@ -122,7 +123,13 @@ export function registerShow1Compat(router, deps) {
 
   function mergedVotes(scope) {
     const live = (scope === 'formal' ? q.liveFormal : q.liveEntertainment).all().map(oldShape);
-    return [...snapshot.votes[scope], ...live].sort(byTimeThenId);
+    const merged = [...snapshot.votes[scope], ...live].sort(byTimeThenId);
+    // 与旧站一致：权重跟随当前设置，历史票按最新权重回放（雷达图依赖 vote.promptWeights）。
+    return merged.map((vote) => {
+      const row = q.arenaEditorial.get(snapshot.taskByRound[vote.promptId] ?? '');
+      if (row?.weights_json) vote.promptWeights = JSON.parse(row.weights_json);
+      return vote;
+    });
   }
 
   const scopeOf = (ctx) => {
@@ -133,7 +140,10 @@ export function registerShow1Compat(router, deps) {
 
   // ---- read-only snapshot -----------------------------------------------------
 
-  router.on('GET', '/api/prompts', () => ({ prompts: snapshot.prompts }));
+  router.on('GET', '/api/prompts', () => ({ prompts: snapshot.prompts.map((prompt) => {
+    const row = q.arenaEditorial.get(snapshot.taskByRound[prompt.id] ?? '');
+    return row ? { ...prompt, commentary: row.commentary, ...(row.weights_json ? { weights: JSON.parse(row.weights_json) } : {}) } : prompt;
+  }) }));
   router.on('GET', '/api/works', () => ({ works: snapshot.works }));
 
   router.on('GET', '/api/votes', (ctx) => ({ votes: mergedVotes(scopeOf(ctx)) }));

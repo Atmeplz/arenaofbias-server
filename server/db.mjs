@@ -178,6 +178,31 @@ const MIGRATIONS = [
      user_id TEXT,
      created_at INTEGER
    );`,
+  `ALTER TABLE works ADD COLUMN show_gallery INTEGER NOT NULL DEFAULT 1 CHECK (show_gallery IN (0, 1));
+   ALTER TABLE works ADD COLUMN show_arena INTEGER NOT NULL DEFAULT 1 CHECK (show_arena IN (0, 1));
+   ALTER TABLE works ADD COLUMN calibration_arena TEXT;
+   UPDATE works SET show_gallery = CASE audience WHEN 'both' THEN 1 WHEN 'show2' THEN 1 ELSE 0 END,
+                    show_arena = CASE audience WHEN 'both' THEN 1 WHEN 'show1' THEN 1 ELSE 0 END;
+   CREATE TABLE work_overrides (
+     task_id TEXT NOT NULL,
+     work_id TEXT NOT NULL,
+     show_gallery INTEGER NOT NULL DEFAULT 1 CHECK (show_gallery IN (0, 1)),
+     show_arena INTEGER NOT NULL DEFAULT 1 CHECK (show_arena IN (0, 1)),
+     calibration_gallery TEXT,
+     calibration_arena TEXT,
+     updated_by TEXT NOT NULL,
+     updated_at INTEGER NOT NULL,
+     PRIMARY KEY (task_id, work_id)
+   );
+   CREATE TABLE task_editorial (
+     task_id TEXT NOT NULL,
+     face TEXT NOT NULL CHECK (face IN ('arena', 'gallery')),
+     commentary TEXT NOT NULL DEFAULT '',
+     weights_json TEXT,
+     updated_by TEXT NOT NULL,
+     updated_at INTEGER NOT NULL,
+     PRIMARY KEY (task_id, face)
+   );`,
 ];
 
 // Exported so tests can build databases at an intermediate schema version.

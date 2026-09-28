@@ -1,0 +1,88 @@
+// Admin-only catalog overlays and traffic summaries. The caller enforces the role.
+import { fail } from './http.mjs';
+import { transaction } from './db.mjs';
+
+const faceOf = (value) => ['gallery', 'arena'].includes(value) ? value : fail(400, '门面参数无效', 'invalid_face');
+const intParam = (value, fallback, max, label) => {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > max) fail(400, `${label}无效`, 'invalid_query');
+  return n;
+};
+
+export function createAdmin({ db, catalog, library }) {
+  const editorial = db.prepare('SELECT * FROM task_editorial WHERE task_id = ? AND face = ?');
+  const setEditorial = db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, face) DO UPDATE SET
+    commentary = excluded.commentary, weights_json = excluded.weights_json,
+    updated_by = excluded.updated_by, updated_at = excluded.updated_at`);
+  const daily = db.prepare('SELECT day, COUNT(*) AS pv, COUNT(DISTINCT ip_hash) AS unique_ips FROM page_views WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day');
+  const paths = db.prepare('SELECT path, COUNT(*) AS pv FROM page_views WHERE day >= ? AND day <= ? GROUP BY path ORDER BY pv DESC, path LIMIT 20');
+  const users = db.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS new_users FROM users');
+
+  const task = (id) => catalog.task(id) ?? fail(404, '题目不存在', 'not_found');
+  const iso = (ms) => new Date(ms).toISOString();
+  return {
+    works(query) {
+      const taskId = query.get('task') || null;
+      if (taskId) task(taskId);
+      const status = query.get('status') || null;
+      if (status && !['verified', 'unverified', 'questioned'].includes(status)) fail(400, '状态筛选无效', 'invalid_query');
+      const face = query.get('face') || null;
+      if (face) faceOf(face);
+      const show = query.get('show') || null;
+      if (show && !['on', 'off'].includes(show)) fail(400, '开关筛选无效', 'invalid_query');
+      if (show && !face) fail(400, '请指定筛选门面', 'invalid_query');
+      const source = query.get('source') || null;
+      if (source && !['curated', 'upload'].includes(source)) fail(400, '来源筛选无效', 'invalid_query');
+      const page = intParam(query.get('page'), 1, 100000, '页码');
+      const pageSize = intParam(query.get('pageSize'), 30, 100, '每页数量');
+      const search = String(query.get('search') ?? '').trim().toLocaleLowerCase();
+      const curated = catalog.tasks().flatMap((t) => [...t.works.values()]);
+      const uploads = library.uploads();
+      const rows = [...curated, ...uploads].map((work) => library.adminWork(work)).filter((work) =>
+        (!taskId || work.task === taskId) && (!status || work.status === status) &&
+        (!source || work.source === source) && (!face || !show || Boolean(work[`show_${face}`]) === (show === 'on')) &&
+        (!search || `${work.title} ${work.modelName} ${work.task}`.toLocaleLowerCase().includes(search)));
+      rows.sort((a, b) => a.task.localeCompare(b.task) || a.title.localeCompare(b.title, 'zh-CN') || a.id.localeCompare(b.id));
+      return { works: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length, page, pageSize };
+    },
+    getEditorial(id, rawFace) {
+      task(id);
+      const face = faceOf(rawFace);
+      const row = editorial.get(id, face);
+      return { task: id, face, commentary: row?.commentary ?? '', weights: row?.weights_json ? JSON.parse(row.weights_json) : null,
+        updatedAt: row ? iso(row.updated_at) : null };
+    },
+    saveEditorial(admin, id, body) {
+      task(id);
+      const face = faceOf(body?.face);
+      if (typeof body.commentary !== 'string' || body.commentary.length > 4000) fail(400, '点评或策展文案无效', 'invalid_editorial');
+      let weights = null;
+      if (face === 'gallery' && body.weights !== undefined) fail(400, '展览馆不使用六维权重', 'invalid_weights');
+      if (face === 'arena') {
+        if (!Array.isArray(body.weights) || body.weights.length !== 6 || body.weights.some((n) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1) ||
+          Math.abs(body.weights.reduce((sum, n) => sum + n, 0) - 1) > 0.001) fail(400, '六维权重须为 6 个 0–1 数字，且总和为 1', 'invalid_weights');
+        weights = body.weights;
+      }
+      transaction(db, () => {
+        setEditorial.run(id, face, body.commentary.trim(), weights ? JSON.stringify(weights) : null, admin.id, Date.now());
+        library.audit(admin, 'editorial', { taskId: id }, JSON.stringify({ face, commentary: body.commentary.trim(), weights }));
+      });
+      return this.getEditorial(id, face);
+    },
+    traffic(rawDays) {
+      const days = intParam(rawDays, 30, 90, '天数');
+      const today = new Date().toISOString().slice(0, 10);
+      const start = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      const startMs = Date.parse(`${start}T00:00:00.000Z`);
+      const byDay = new Map(daily.all(start, today).map((row) => [row.day, row]));
+      const series = Array.from({ length: days }, (_, i) => {
+        const day = new Date(startMs + i * 86400000).toISOString().slice(0, 10);
+        return { day, pv: byDay.get(day)?.pv ?? 0, uniqueIps: byDay.get(day)?.unique_ips ?? 0 };
+      });
+      const counts = users.get(startMs);
+      return { days, daily: series, paths: paths.all(start, today), users: { total: counts.total, new: counts.new_users ?? 0 } };
+    },
+  };
+}

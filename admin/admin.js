@@ -140,8 +140,10 @@ const ACTIONS = { submit: '提交作品', verified: '通过验证', questioned: 
 const REVIEW_TABS = { unverified: '未验证', verified: '已验证', questioned: '存疑', log: '记录' };
 
 // App state. `data` is the static catalog (task titles, model list) read from /data.json.
-const state = { user: undefined, data: null, works: null, audit: [], users: null, worksFilter: 'all', error: '' };
-const taskTitle = (id) => state.data?.tasks?.find((t) => t.id === id)?.title ?? id;
+const state = { user: undefined, data: null, works: null, audit: [], users: null, worksFilter: 'all', error: '',
+  system: store.get('admin-system') === 'arena' ? 'arena' : 'gallery', adminWorks: [], workTotal: 0,
+  workPage: 1, workTask: '', workStatus: '', workShow: '', workSearch: '', traffic: null };
+const taskTitle = (id) => [...(state.data?.tasks ?? []), ...(state.questions ?? [])].find((t) => t.id === id)?.title ?? id;
 
 async function loadCatalog() {
   if (state.data) return;
@@ -292,7 +294,10 @@ function openReview(w) {
           <label class="field"><span class="field-label">登记为模型</span><select class="input" name="modelId"><option value="">保持声明：${esc(w.modelName)}</option>${options}</select></label>
           <label class="field"><span class="field-label">推理档位</span><input class="input" name="effort" maxlength="20" value="${esc(w.effort)}" placeholder="默认 / 未设置"></label>
         </div>
-        ${w.audience === 'hidden' ? '<label class="field"><span class="field-label">审核通过后展示在</span><select class="input" name="audience"><option value="hidden">先不发布</option><option value="show1">Show1</option><option value="show2">Show2</option><option value="both">两个网站</option></select></label>' : ''}
+        <label class="field"><span class="field-label">作品标题</span><input class="input" name="title" maxlength="40" value="${esc(w.title)}" required></label>
+        <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" value="${esc(w.modelName)}" required></label>
+        <label class="field"><span class="field-label">作品摘要</span><textarea class="input" name="summary" maxlength="200" rows="2">${esc(w.summary)}</textarea></label>
+        <div class="face-checks"><label><input type="checkbox" name="show_gallery" ${w.status === 'unverified' || ['show2', 'both'].includes(w.audience) ? 'checked' : ''}> 展览馆显示</label><label><input type="checkbox" name="show_arena" ${w.status === 'unverified' || ['show1', 'both'].includes(w.audience) ? 'checked' : ''}> 竞技场显示</label></div>
         <label class="field"><span class="field-label">说明<small>标记存疑时必填，作者与访客都能看到</small></span><textarea class="input" name="reason" rows="3" maxlength="500">${esc(w.status === 'questioned' ? w.reason : '')}</textarea></label>
         <p class="form-error" role="alert"></p>
         <div class="sheet-actions">
@@ -314,9 +319,12 @@ function openReview(w) {
       return;
     }
     if (!decide) return;
-    const body = { status: decide.dataset.decide, reason: form.reason.value, effort: form.effort.value };
-    if (w.audience === 'hidden' && body.status === 'verified') body.audience = form.audience.value;
-    if (form.modelId.value) body.modelId = form.modelId.value;
+    const field = (name) => form.elements.namedItem(name);
+    const body = { status: decide.dataset.decide, reason: field('reason').value, effort: field('effort').value,
+      title: field('title').value, summary: field('summary').value,
+      show_gallery: field('show_gallery').checked, show_arena: field('show_arena').checked };
+    if (field('modelId').value) body.modelId = field('modelId').value;
+    else if (field('modelName').value !== w.modelName) body.modelName = field('modelName').value;
     $$('[data-decide]', form).forEach((b) => { b.disabled = true; });
     try {
       await api(`works/${encodeURIComponent(w.task)}/${encodeURIComponent(w.id)}/review`, { method: 'POST', body });
@@ -336,12 +344,15 @@ const routeParts = () => location.hash.replace(/^#\/?/, '').split('/').filter(Bo
 const TABS = [
   { id: 'review', label: '审核', icon: 'shield' },
   { id: 'works', label: '作品', icon: 'file' },
+  { id: 'tasks', label: '题目', icon: 'guide' },
   { id: 'users', label: '用户', icon: 'users' },
+  { id: 'traffic', label: '流量', icon: 'clock' },
 ];
 
 function topbar(route) {
   return `<header class="topbar">
     <a class="brand" href="#/review">${LOGO}<span class="brand-name">同题异答<b>管理后台</b></span></a>
+    <div class="system-switch" role="group" aria-label="管理系统"><button type="button" data-system="gallery" aria-pressed="${state.system === 'gallery'}">展览馆系统</button><button type="button" data-system="arena" aria-pressed="${state.system === 'arena'}">竞技场系统</button></div>
     <nav class="tabs" aria-label="管理">
       ${TABS.map((tab) => `<a href="#/${tab.id}"${tab.id === route ? ' aria-current="page"' : ''}>${icon(tab.icon)}${tab.label}</a>`).join('')}
     </nav>
@@ -380,8 +391,9 @@ function reviewView(sub) {
       ? `<div class="work-list">${rows.map(workRow).join('')}</div>`
       : `<div class="board-empty"><p class="board-empty-title">${tab === 'unverified' ? '没有等待核验的作品' : `没有${REVIEW_TABS[tab]}的投稿`}</p><p>${tab === 'unverified' ? '新的投稿会按提交顺序出现在这里。' : '馆藏作品由仓库收录流程管理，不在这里审核。'}</p></div>`;
   }
-  return `${pageHero('Review', '审核', '核对每件投稿能否运行、是否符合题目、生成信息是否可信。通过的作品进入盲评并优先展示；无法核实的标记存疑并写明原因。', [['待核验', count('unverified')], ['已验证', count('verified')], ['存疑', count('questioned')]])}
+  return `${pageHero('审核管理', '审核', '核对每件投稿能否运行、是否符合题目、生成信息是否可信。通过的作品进入盲评并优先展示；无法核实的标记存疑并写明原因。', [['待核验', count('unverified')], ['已验证', count('verified')], ['存疑', count('questioned')]])}
   <section class="block">
+    <div class="actions admin-toolbar"><button class="btn primary" type="button" data-admin-upload>代传作品</button></div>
     <nav class="seg review-tabs" aria-label="审核分类">${Object.entries(REVIEW_TABS).map(([id, text]) => `<a href="#/review/${id}"${id === tab ? ' aria-current="page"' : ''}>${text}${id === 'log' ? '' : `<span>${count(id)}</span>`}</a>`).join('')}</nav>
     ${state.works === null ? '<p class="muted">正在载入…</p>' : list}
   </section>`;
@@ -419,6 +431,135 @@ function worksView() {
   </section>`;
 }
 
+const faceLabel = () => state.system === 'gallery' ? '展览馆' : '竞技场';
+const workKey = (w) => `${encodeURIComponent(w.task)}/${encodeURIComponent(w.id)}`;
+function systemWorksView() {
+  const face = state.system;
+  const works = state.adminWorks;
+  const tasks = [...(state.data?.tasks ?? []), ...(state.questions ?? [])];
+  const options = tasks.map((t) => `<option value="${esc(t.id)}" ${state.workTask === t.id ? 'selected' : ''}>${esc(t.title)}</option>`).join('');
+  const pages = Math.max(1, Math.ceil(state.workTotal / 30));
+  const rows = works.map((w) => `<tr>
+    <td><div class="admin-work-title">${thumb(w)}<div><b>${esc(w.title)}</b><small>${esc(taskTitle(w.task))}</small></div></div></td>
+    <td>${esc(w.modelName)}</td><td>${w.source === 'curated' ? '精选' : '投稿'}</td><td>${statusBadge(w.status)}</td>
+    <td><label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}在${faceLabel()}显示">${w[`show_${face}`] ? '已开启' : '已关闭'}</label></td>
+    ${face === 'arena' ? `<td>${w.status === 'verified' && w.show_arena ? '在配对池' : '不在配对池'}</td>` : '<td>—</td>'}
+    <td><div class="actions"><button class="btn sm" data-calibrate="${esc(w.id)}">${faceLabel()}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `<button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
+  </tr>`).join('');
+  return `${pageHero('作品管理', `${faceLabel()}作品`, '精选与投稿共用作品库，开关和取景分别保存。', [['全部作品', state.workTotal], ['本页', works.length]])}
+    <section class="block"><form id="admin-work-filter" class="admin-filter">
+      <input class="input" name="search" value="${esc(state.workSearch)}" placeholder="搜索作品或模型" aria-label="搜索作品或模型">
+      <select class="input" name="task" aria-label="筛选题目"><option value="">全部题目</option>${options}</select>
+      <select class="input" name="status" aria-label="筛选状态"><option value="">全部状态</option>${Object.entries(WORKS_FILTERS).filter(([id]) => id !== 'all').map(([id, label]) => `<option value="${id}" ${state.workStatus === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
+      <select class="input" name="show" aria-label="筛选开关"><option value="">全部开关</option><option value="on" ${state.workShow === 'on' ? 'selected' : ''}>已开启</option><option value="off" ${state.workShow === 'off' ? 'selected' : ''}>已关闭</option></select>
+      <button class="btn" type="submit">筛选</button></form>
+      ${rows ? `<div class="table-wrap"><table class="board admin-work-table"><thead><tr><th>作品</th><th>模型</th><th>来源</th><th>状态</th><th>${faceLabel()}开关</th><th>${face === 'arena' ? '配对池' : '备注'}</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="board-empty">没有符合条件的作品。</p>'}
+      <div class="admin-pagination"><button class="btn sm" data-page="${state.workPage - 1}" ${state.workPage <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${state.workPage} / ${pages} 页</span><button class="btn sm" data-page="${state.workPage + 1}" ${state.workPage >= pages ? 'disabled' : ''}>下一页</button></div>
+    </section>`;
+}
+
+function tasksView() {
+  const tasks = [...(state.data?.tasks ?? []), ...(state.questions ?? [])];
+  return `${pageHero('题目管理', `${faceLabel()}题目`, state.system === 'gallery' ? '为每道题编辑策展文案。' : '为每道题编辑点评和六维权重。', [['题目', tasks.length]])}
+    <section class="block"><div class="admin-task-list">${tasks.map((task) => `<article class="admin-task"><div><h3>${esc(task.title)}</h3><p class="muted">${esc(task.id)}</p></div><button class="btn" data-task-note="${esc(task.id)}">${state.system === 'gallery' ? '编辑策展文案' : '编辑点评与权重'}</button></article>`).join('')}</div></section>`;
+}
+
+function trafficView() {
+  const data = state.traffic;
+  if (!data) return '<p class="muted">正在载入流量…</p>';
+  const max = Math.max(1, ...data.daily.map((d) => d.pv));
+  return `${pageHero('访问概况', '流量', '近 30 日页面浏览和注册概况。', [['用户总数', data.users.total], ['新增用户', data.users.new]])}
+    <section class="block"><h2>每日访问</h2><div class="traffic-bars" aria-label="每日访问量">${data.daily.map((d) => `<div class="traffic-day" title="${d.day}：${d.pv} PV，${d.uniqueIps} 位独立访客"><div class="traffic-bar" style="height:${Math.max(2, d.pv / max * 100)}%"></div><span>${d.day.slice(5)}</span></div>`).join('')}</div>
+    <h2>热门路径</h2><ol class="traffic-paths">${data.paths.map((p) => `<li><span>${esc(p.path)}</span><b>${p.pv} PV</b></li>`).join('') || '<li>暂无记录</li>'}</ol></section>`;
+}
+
+function calibrationDialog(w) {
+  const face = state.system;
+  const current = w[`calibration_${face}`] ?? {};
+  const framing = current.framing ?? { width: 1440, height: 900, zoom: 1, offsetX: 0, offsetY: 0 };
+  const camera = current.camera ?? { position: [0, 0, 5], target: [0, 0, 0] };
+  const fields = [['width', 320, 3840, 1], ['height', 240, 3840, 1], ['zoom', 0.25, 4, 0.01], ['offsetX', -1, 1, 0.01], ['offsetY', -1, 1, 0.01]];
+  const names = { width: '画框宽度', height: '画框高度', zoom: '缩放', offsetX: '水平偏移', offsetY: '垂直偏移',
+    position0: '相机位置 X', position1: '相机位置 Y', position2: '相机位置 Z', target0: '相机目标 X', target1: '相机目标 Y', target2: '相机目标 Z' };
+  const input = (name, value, min, max, step) => `<label class="field"><span class="field-label">${names[name]}</span><input class="input" type="number" name="${name}" value="${value}" min="${min}" max="${max}" step="${step}" required></label>`;
+  const sheet = openDialog({ title: `${faceLabel()}取景 · ${w.title}`, body: `<form class="admin-editor">
+    <label class="field"><input type="checkbox" name="framing_enabled" ${current.framing ? 'checked' : ''}> 使用画框参数</label><div class="admin-grid">${fields.map(([name, min, max, step]) => input(name, framing[name], min, max, step)).join('')}</div>
+    <label class="field"><input type="checkbox" name="camera_enabled" ${current.camera ? 'checked' : ''}> 使用相机参数</label><div class="admin-grid">${['position', 'target'].flatMap((key) => [0, 1, 2].map((i) => input(`${key}${i}`, camera[key][i], -9999999, 9999999, 'any'))).join('')}</div>
+    <p class="form-error" role="alert"></p><div class="actions"><button class="btn primary" type="submit">保存取景</button><button class="btn" type="button" data-clear-calibration>清空取景</button></div></form>` });
+  const form = $('form', sheet.el);
+  const save = async (calibration) => {
+    try { await api(`admin/works/${workKey(w)}/calibration`, { method: 'POST', body: { face, calibration } }); sheet.close(); toast('取景已保存'); await reload(); }
+    catch (error) { $('.form-error', form).textContent = error.message; }
+  };
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const val = (name) => Number(form.elements.namedItem(name).value);
+    const patch = { framing: form.elements.namedItem('framing_enabled').checked ? Object.fromEntries(fields.map(([name]) => [name, val(name)])) : null,
+      camera: form.elements.namedItem('camera_enabled').checked ? { position: [0, 1, 2].map((i) => val(`position${i}`)), target: [0, 1, 2].map((i) => val(`target${i}`)) } : null };
+    save(patch);
+  });
+  $('[data-clear-calibration]', sheet.el).addEventListener('click', () => save(null));
+}
+
+async function editorialDialog(taskId) {
+  const face = state.system;
+  let current;
+  try { current = await api(`admin/tasks/${encodeURIComponent(taskId)}/editorial?face=${face}`); }
+  catch (error) { toast(error.message); return; }
+  const weights = current.weights ?? [0.166, 0.166, 0.167, 0.167, 0.167, 0.167];
+  const labels = ['视觉设计', '空间营造', '动态表现', '文字表达', '思辨推理', '创意构思'];
+  const sheet = openDialog({ title: `${faceLabel()}主编视角 · ${taskTitle(taskId)}`, body: `<form class="admin-editor">
+    <label class="field"><span class="field-label">${face === 'gallery' ? '策展文案' : '题目点评'}</span><textarea class="input" name="commentary" rows="8" maxlength="4000">${esc(current.commentary)}</textarea></label>
+    ${face === 'arena' ? `<div class="weight-list">${labels.map((label, i) => `<label><span>${label}</span><input type="range" name="weight${i}" min="0" max="1" step="0.001" value="${weights[i]}"><output>${weights[i].toFixed(3)}</output></label>`).join('')}</div><p class="weight-sum">权重和：<strong></strong>（须为 1）</p>` : ''}
+    <p class="form-error" role="alert"></p><button class="btn primary" type="submit">保存</button></form>` });
+  const form = $('form', sheet.el);
+  const update = () => {
+    if (face !== 'arena') return;
+    const values = labels.map((_, i) => Number(form.elements.namedItem(`weight${i}`).value));
+    $$('.weight-list output', form).forEach((out, i) => { out.value = values[i].toFixed(3); });
+    const sum = values.reduce((a, b) => a + b, 0);
+    $('.weight-sum strong', form).textContent = sum.toFixed(3);
+    $('button[type="submit"]', form).disabled = Math.abs(sum - 1) > 0.001;
+  };
+  form.addEventListener('input', update); update();
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { face, commentary: form.elements.namedItem('commentary').value };
+    if (face === 'arena') body.weights = labels.map((_, i) => Number(form.elements.namedItem(`weight${i}`).value));
+    try { await api(`admin/tasks/${encodeURIComponent(taskId)}/editorial`, { method: 'POST', body }); sheet.close(); toast('主编视角已保存'); }
+    catch (error) { $('.form-error', form).textContent = error.message; }
+  });
+}
+
+function uploadDialog() {
+  const tasks = [...(state.data?.tasks ?? []), ...(state.questions ?? [])];
+  const sheet = openDialog({ title: '管理员代传作品', body: `<form class="admin-editor">
+    <label class="field"><span class="field-label">题目</span><select class="input" name="task" required>${tasks.map((t) => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</select></label>
+    <label class="field"><span class="field-label">HTML 单文件或 ZIP</span><input class="input" type="file" name="file" accept=".html,.htm,.zip" required></label>
+    <label class="field"><span class="field-label">标题</span><input class="input" name="title" maxlength="40" required></label>
+    <label class="field"><span class="field-label">模型名称</span><input class="input" name="modelName" maxlength="60" required></label>
+    <label class="field"><span class="field-label">摘要</span><textarea class="input" name="summary" maxlength="200" rows="2"></textarea></label>
+    <div class="face-checks"><label><input type="checkbox" name="show_gallery" checked> 展览馆显示</label><label><input type="checkbox" name="show_arena" checked> 竞技场显示</label></div>
+    <p class="form-error" role="alert"></p><button class="btn primary" type="submit">上传并通过验证</button></form>` });
+  const form = $('form', sheet.el);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const field = (name) => form.elements.namedItem(name);
+    const file = field('file').files[0];
+    if (!file) return;
+    const query = new URLSearchParams({ task: field('task').value, name: file.name, title: field('title').value,
+      modelName: field('modelName').value, summary: field('summary').value,
+      show_gallery: field('show_gallery').checked ? '1' : '0', show_arena: field('show_arena').checked ? '1' : '0' });
+    const button = $('button[type="submit"]', form); button.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/works/upload?${query}`, { method: 'POST', credentials: 'same-origin', body: file });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? '上传失败');
+      sheet.close(); toast(`已代传：${data.work.title}`); await reload();
+    } catch (error) { $('.form-error', form).textContent = error.message; button.disabled = false; }
+  });
+}
+
 // -- users tab --
 function usersView() {
   const users = state.users ?? [];
@@ -432,7 +573,7 @@ function usersView() {
       <td class="c-actions"><button class="btn sm${target === 'admin' ? ' primary' : ''}" data-role="${esc(u.id)}" data-target="${target}"${self ? ' disabled title="不能修改自己的角色"' : ''}>${target === 'admin' ? '设为管理员' : '设为成员'}</button></td>
     </tr>`;
   }).join('');
-  return `${pageHero('Users', '用户', '账号与角色。管理员可以审核作品、调整其他账号的角色；自己的角色只能由别的管理员修改。', [['账号', users.length], ['管理员', users.filter((u) => u.role === 'admin').length]])}
+  return `${pageHero('用户管理', '用户', '账号与角色。管理员可以审核作品、调整其他账号的角色；自己的角色只能由别的管理员修改。', [['账号', users.length], ['管理员', users.filter((u) => u.role === 'admin').length]])}
   <section class="block">
     ${state.users === null ? '<p class="muted">正在载入…</p>' : `<div class="table-wrap"><table class="board users-table">
       <thead><tr><th class="c-title">用户名</th><th>角色</th><th>注册时间</th><th class="c-actions">操作</th></tr></thead>
@@ -446,7 +587,7 @@ function loginView() {
   app().innerHTML = `<main class="gate">
     <div class="gate-panel">
       <div class="gate-brand">${LOGO}</div>
-      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span>Admin</p>
+      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span>管理后台</p>
       <h1>管理后台<span class="stop">。</span></h1>
       <p class="gate-lead">同题异答展厅的共用管理端：审核投稿、管理作品与账号角色。需要管理员账号。</p>
       <form class="gate-form" novalidate>
@@ -479,7 +620,7 @@ function forbiddenView() {
   app().innerHTML = `<main class="gate">
     <div class="gate-panel">
       <div class="gate-brand">${LOGO}</div>
-      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span>Admin</p>
+      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span>管理后台</p>
       <h1>需要管理员权限<span class="stop">。</span></h1>
       <p class="gate-lead">当前账号「${esc(state.user.name)}」不是管理员。管理员可以在用户页调整角色，或由维护者在服务器上运行 <code>npm run admin -- &lt;用户名&gt;</code>。</p>
       <div class="actions">
@@ -497,6 +638,19 @@ async function reload() {
     if (route === 'users') {
       const data = await api('admin/users');
       state.users = data.users;
+      state.error = '';
+    } else if (route === 'works') {
+      const query = new URLSearchParams({ page: state.workPage, pageSize: 30, face: state.system });
+      if (state.workTask) query.set('task', state.workTask);
+      if (state.workStatus) query.set('status', state.workStatus);
+      if (state.workShow) query.set('show', state.workShow);
+      if (state.workSearch) query.set('search', state.workSearch);
+      const data = await api(`admin/works?${query}`);
+      state.adminWorks = data.works;
+      state.workTotal = data.total;
+      state.error = '';
+    } else if (route === 'traffic') {
+      state.traffic = await api('admin/traffic?days=30');
       state.error = '';
     } else {
       await loadReview();
@@ -517,7 +671,7 @@ function render() {
   const [route = 'review', sub] = routeParts();
   const known = TABS.some((tab) => tab.id === route);
   if (!known) { location.hash = '#/review'; return; }
-  const body = route === 'works' ? worksView() : route === 'users' ? usersView() : reviewView(sub);
+  const body = route === 'works' ? systemWorksView() : route === 'tasks' ? tasksView() : route === 'traffic' ? trafficView() : route === 'users' ? usersView() : reviewView(sub);
   app().innerHTML = `${topbar(route)}<main class="page">${state.error ? `<p class="form-error page-error">${esc(state.error)}</p>` : ''}${body}</main>`;
   document.title = `${TABS.find((tab) => tab.id === route).label} · 管理后台`;
 }
@@ -526,6 +680,7 @@ async function boot() {
   try {
     const data = await api('bootstrap');
     state.user = data.user;
+    state.questions = data.questions;
   } catch {
     state.user = null;
   }
@@ -539,7 +694,16 @@ async function boot() {
 
 // ---- events ----------------------------------------------------------------------------------
 document.addEventListener('click', async (e) => {
+  const system = e.target.closest('[data-system]');
+  if (system) { state.system = system.dataset.system; store.set('admin-system', state.system); state.workPage = 1; await reload(); return; }
   if (e.target.closest('[data-theme-toggle]')) { toggleTheme(); return; }
+  if (e.target.closest('[data-admin-upload]')) { uploadDialog(); return; }
+  const page = e.target.closest('[data-page]');
+  if (page && !page.disabled) { state.workPage = Number(page.dataset.page); await reload(); return; }
+  const calibrate = e.target.closest('[data-calibrate]');
+  if (calibrate) { const w = state.adminWorks.find((item) => item.id === calibrate.dataset.calibrate); if (w) calibrationDialog(w); return; }
+  const note = e.target.closest('[data-task-note]');
+  if (note) { await editorialDialog(note.dataset.taskNote); return; }
   if (e.target.closest('[data-logout]')) {
     await api('auth/logout', { method: 'POST' }).catch(() => {});
     state.user = null;
@@ -553,7 +717,7 @@ document.addEventListener('click', async (e) => {
   if (filter) { state.worksFilter = filter.dataset.filter; render(); return; }
   const reviewBtn = e.target.closest('[data-review]');
   if (reviewBtn) {
-    const work = state.works?.find((w) => w.id === reviewBtn.dataset.review);
+    const work = state.works?.find((w) => w.id === reviewBtn.dataset.review) ?? state.adminWorks.find((w) => w.id === reviewBtn.dataset.review);
     if (work) openReview(work);
     return;
   }
@@ -599,6 +763,29 @@ document.addEventListener('click', async (e) => {
       roleBtn.disabled = false;
     }
   }
+});
+document.addEventListener('change', async (e) => {
+  const toggle = e.target.closest('[data-face-toggle]');
+  if (!toggle) return;
+  const work = state.adminWorks.find((item) => item.id === toggle.dataset.faceToggle);
+  if (!work) return;
+  toggle.disabled = true;
+  try {
+    await api(`admin/works/${workKey(work)}/face-settings`, { method: 'POST', body: { [`show_${state.system}`]: toggle.checked } });
+    toast(`${faceLabel()}开关已${toggle.checked ? '开启' : '关闭'}`);
+    await reload();
+  } catch (error) { toggle.checked = !toggle.checked; toggle.disabled = false; toast(error.message); }
+});
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'admin-work-filter') return;
+  e.preventDefault();
+  const form = e.target;
+  state.workSearch = form.elements.namedItem('search').value.trim();
+  state.workTask = form.elements.namedItem('task').value;
+  state.workStatus = form.elements.namedItem('status').value;
+  state.workShow = form.elements.namedItem('show').value;
+  state.workPage = 1;
+  await reload();
 });
 addEventListener('hashchange', () => { if (state.user?.role === 'admin') reload(); });
 

@@ -353,11 +353,13 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 
 ```json
 { "status": "verified", "reason": "（questioned 时必填，≤500 字）",
-  "modelId": "（选填：审核时顺带纠正模型归属）", "modelName": "…", "vendor": "…", "effort": "…" }
+  "modelId": "（选填：审核时顺带纠正模型归属）", "modelName": "…", "vendor": "…", "effort": "…",
+  "title": "作品标题", "summary": "摘要", "show_gallery": true, "show_arena": true }
 ```
 
 - `status` 取值 `verified` / `questioned` / `unverified`；`questioned` 必须给 `reason`（`400` 否则）；置为 `verified` 会清空理由。
 - 仅当请求体出现 `modelId` / `modelName` 键时才重取模型身份，否则保持原值；`effort` 同理。
+- `title`、`summary` 与两个布尔门面开关均可选；审核通过时可同时修改。兼容旧的 `audience` 参数，并按最终开关同步该列。所有审核写入 audit。
 
 成功 `200`：`{ "work": <作品公开视图（管理员视角，含特权字段）> }`。错误：`401` / `403 仅管理员可以操作`；`404`；`400 审核结果无效`。
 
@@ -566,13 +568,39 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 
 ### 3.17 Show1 历史作品的审核与站点展示（schema v7）
 
-`works.audience` 为 `hidden` / `show1` / `show2` / `both`，旧作品和普通投稿默认 `show2`。Show1 迁入作品一律为 `status=unverified, audience=hidden`；只有管理员审核通过并指定 `audience` 后才公开。`hidden` 作品仅在管理员 `GET /api/review` 中列出，不进入 `/api/bootstrap`、Show1 作品列表、评论、表情或盲评池。后台审核视图可取得随机作品内容令牌用于私密试加载；令牌本身具有预览能力，不应公开转发。
+`works.audience` 为 `hidden` / `show1` / `show2` / `both`，保留作兼容字段。v9 起实际可见性由 `show_gallery`、`show_arena` 决定；v8 旧数据升级时按 `audience` 回填。新投稿和管理员代传默认双开；Show1 历史待审作品升级后两个开关关闭。管理员审核通过时可指定门面。后台审核视图可取得随机作品内容令牌用于私密试加载；令牌本身具有预览能力，不应公开转发。
 
-**`GET /api/show1/works`** —— Show1 公开作品列表，不需要登录、无限流。成功 `200`：`{ "works": [<作品公开视图>], "reactions": { "counts": {}, "mine": {} } }`。只返回 `verified` 且 `audience=show1|both` 的 SQLite 作品；不会把它们加入 Show2 的 `/api/bootstrap.works` 或 Show2 盲评池。Show1 题目定义由数据包负责，此接口不创建题目。
+**`GET /api/show1/works`** —— Show1 公开作品列表，不需要登录、无限流。成功 `200`：`{ "works": [<作品公开视图>], "reactions": { "counts": {}, "mine": {} } }`。只返回 `verified` 且 `show_arena=1` 的 SQLite 作品；`/api/bootstrap.works` 只看 `show_gallery`。竞技场盲评池同样使用 `show_arena`。Show1 题目定义仍由数据包负责，此接口不创建题目。
 
-**`POST /api/works/:task/:id/review`** —— 原审核端点可附加 `audience: "show1" | "show2" | "both"`。对 `hidden` 迁入作品，设置 `status=verified` 时必须同时指定非 `hidden` 的 audience；否则 `400`。仍需管理员身份，遵循现有 Origin 校验与审核错误格式；成功返回的管理员作品视图含 `audience`。后台审核页提供展示站点选项。
+**`POST /api/works/:task/:id/review`** —— 原审核端点仍接受 `audience: "show1" | "show2" | "both"`。对 `hidden` 迁入作品，旧请求设置 `status=verified` 时须指定非 `hidden` 的 audience；新请求可改传两个布尔门面开关。仍需管理员身份，遵循现有 Origin 校验与审核错误格式；成功返回的管理员作品视图含兼容 `audience`。
 
 迁移脚本与执行参数见 `docs/show1-migration.md`。Show1 七道新题的目标 ID 固定为 `show1-001`、`show1-002`、`show1-003`、`show1-005` 至 `show1-008`；004 沿用 `chinese-architecture`。七道题的正式定义进入数据包前，作品仍可在后台审核，但前端没有完整题目元数据。
+
+### 3.18 双系统管理端（schema v9）
+
+以下端点均须管理员会话；非管理员返回 `401`（未登录）或 `403`。写请求走同源检查、`write` 限流并记录 audit。错误仍按 1.4 节的 `{ "error": "中文提示", "code": "可选代码" }` 格式返回。
+
+**`GET /api/admin/works`** 合并馆藏精选和 SQLite 投稿。查询参数：`task`（题目 ID）、`status=verified|unverified|questioned`、`source=curated|upload`、`face=gallery|arena` 与 `show=on|off`（两者一起使用）、`search`（标题、模型、题目 ID）、`page`（默认 1）、`pageSize`（默认 30，最多 100）。成功形状：
+
+```json
+{ "works": [{ "task": "one", "id": "a", "source": "curated", "status": "verified", "show_gallery": true, "show_arena": true, "calibration_gallery": null, "calibration_arena": null, "has_calibration_gallery": false, "has_calibration_arena": false }], "total": 1, "page": 1, "pageSize": 30 }
+```
+
+作品对象还含原有管理员作品视图字段。精选开关和取景先读 `work_overrides`，缺失时两个开关默认开启。查询错误：`400 invalid_query`、`404 not_found`（题目不存在）。
+
+**`POST /api/admin/works/:task/:id/face-settings`** 请求 `{ "show_gallery": false, "show_arena": true }`，可只给其中一个布尔键。投稿写 `works` 并同步兼容 `audience`；精选 upsert `work_overrides`，不修改数据包。响应 `{ "work": <合并管理员作品视图> }`。错误：`400 invalid_face_settings`、`404 not_found`、`429`。
+
+**`POST /api/admin/works/:task/:id/calibration`** 请求 `{ "face": "gallery" | "arena", "calibration": { "framing": { "width": 1440, "height": 900, "zoom": 1, "offsetX": 0, "offsetY": 0 }, "camera": { "position": [0,0,5], "target": [0,0,0] } } }`。`calibration` 可为 `null` 清空；对象可只给其中一项，单项为 `null` 则删除该项。投稿画廊取景仍在 `trial.calibration`，竞技场取景在 `works.calibration_arena`；精选取景写覆盖表的两个附加列。响应 `{ "task": "one", "id": "a", "face": "arena", "calibration": <当前对象或 null> }`。错误：`400 invalid_face|invalid_calibration`、`404 not_found`、`429`。校验范围沿用 3.16 节。
+
+**`GET /api/admin/tasks/:id/editorial?face=gallery|arena`** 响应 `{ "task": "one", "face": "arena", "commentary": "…", "weights": [0.2,0.2,0.2,0.2,0.1,0.1] | null, "updatedAt": "…" | null }`。**`POST /api/admin/tasks/:id/editorial`** 请求 `{ "face": "arena", "commentary": "点评", "weights": [0.2,0.2,0.2,0.2,0.1,0.1] }`；`gallery` 只接受 `commentary`，不得传 `weights`。竞技场权重须 6 个 0–1 数，总和在 `1 ± 0.001`。成功返回同 GET。错误：`400 invalid_face|invalid_editorial|invalid_weights`、`404 not_found`、`429`。
+
+Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`、`weights`；没有覆盖时仍逐项返回快照内容。历史票的快照权重与娱乐榜回放不随覆盖修改。
+
+**`GET /api/admin/traffic?days=N`** `N` 默认 30，范围 1–90。响应 `{ "days": 30, "daily": [{ "day": "2026-09-28", "pv": 12, "uniqueIps": 8 }], "paths": [{ "path": "/", "pv": 9 }], "users": { "total": 24, "new": 2 } }`。`daily` 按 UTC 日补齐零值；`paths` 最多 20 条；错误 `400 invalid_query`。
+
+**`POST /api/admin/works/upload`** 原始 HTML 或 ZIP 请求体，查询参数 `task`、`name`（含扩展名）、`title`、`modelId` 或 `modelName`、`summary`、`tool`、`template`、`show_gallery=0|1`、`show_arena=0|1`。沿用草稿检查和投稿存储，直接核验为 `verified`，默认双开。响应 `{ "work": <合并管理员作品视图> }`。错误沿用 `/api/drafts` 和 `/api/works`，另有 `400 invalid_face_settings`、`413`、`429`。该流程在 audit 中留下 `submit` 和 `verified` 两条记录。
+
+竞技场配对和 Bradley–Terry 计分都只纳入当前 `show_arena=1` 的已验证作品；精选没有覆盖记录时默认开启。`votes.source='arena'` 的限制不变。Show1 娱乐榜仍从全量历史票回放。
 
 ---
 

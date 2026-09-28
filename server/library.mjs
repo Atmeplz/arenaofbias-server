@@ -72,10 +72,20 @@ export function createLibrary({ db, catalog, config, limits }) {
       source_name, root, entry, file_count, bytes, digest, checks, trial, cover, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     review: db.prepare(`UPDATE works SET status = ?, status_reason = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?,
-      audience = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
+      audience = ?, show_gallery = ?, show_arena = ?, title = ?, summary = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
     remove: db.prepare('UPDATE works SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?'),
     captures: db.prepare('UPDATE works SET captures = ? WHERE id = ?'),
     calibration: db.prepare('UPDATE works SET trial = ?, updated_at = ? WHERE id = ?'),
+    arenaCalibration: db.prepare('UPDATE works SET calibration_arena = ?, updated_at = ? WHERE id = ?'),
+    faceSettings: db.prepare('UPDATE works SET show_gallery = ?, show_arena = ?, audience = ?, updated_at = ? WHERE id = ?'),
+    override: db.prepare('SELECT * FROM work_overrides WHERE task_id = ? AND work_id = ?'),
+    setOverride: db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
+      show_gallery = excluded.show_gallery, show_arena = excluded.show_arena, updated_by = excluded.updated_by, updated_at = excluded.updated_at`),
+    setCuratedCalibration: db.prepare(`INSERT INTO work_overrides (task_id, work_id, calibration_gallery, calibration_arena, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
+      calibration_gallery = excluded.calibration_gallery, calibration_arena = excluded.calibration_arena,
+      updated_by = excluded.updated_by, updated_at = excluded.updated_at`),
     reaction: db.prepare('SELECT 1 FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
     addReaction: db.prepare('INSERT INTO reactions (task_id, work_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)'),
     dropReaction: db.prepare('DELETE FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
@@ -93,6 +103,9 @@ export function createLibrary({ db, catalog, config, limits }) {
       curated: false,
       status: row.status,
       audience: row.audience,
+      showGallery: Boolean(row.show_gallery),
+      showArena: Boolean(row.show_arena),
+      calibrationArena: row.calibration_arena ? JSON.parse(row.calibration_arena) : null,
       reason: row.status_reason,
       title: row.title,
       summary: row.summary,
@@ -141,9 +154,16 @@ export function createLibrary({ db, catalog, config, limits }) {
   // Directories left behind by an interrupted upload.
   for (const name of readdirSync(dirs.drafts)) if (!q.draft.get(name)) rmSync(join(dirs.drafts, name), { recursive: true, force: true });
 
-  const visibleTo = (work, site = 'show2') => Boolean(work?.curated ? site === 'show2' : work && work.audience !== 'hidden' &&
-    (work.audience === site || work.audience === 'both'));
-  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir && visibleTo(work));
+  const flagsOf = (work) => {
+    if (!work) return { show_gallery: false, show_arena: false };
+    if (work.curated) {
+      const row = q.override.get(work.taskId, work.id);
+      return { show_gallery: Boolean(row?.show_gallery ?? 1), show_arena: Boolean(row?.show_arena ?? 1) };
+    }
+    return { show_gallery: work.showGallery, show_arena: work.showArena };
+  };
+  const visibleTo = (work, site = 'show2') => Boolean(work && (site === 'show1' ? flagsOf(work).show_arena : flagsOf(work).show_gallery));
+  const isEligible = (work) => Boolean(work && work.status === 'verified' && work.dir && visibleTo(work, 'show1'));
   const isInteractive = (work) => Boolean(work && work.status !== 'questioned' &&
     (visibleTo(work, 'show1') || visibleTo(work, 'show2')));
 
@@ -216,6 +236,7 @@ export function createLibrary({ db, catalog, config, limits }) {
     isEligible,
     isInteractive,
     visibleTo,
+    flagsOf,
     originOf,
     audit,
     mediaDir: dirs.media,
@@ -229,7 +250,7 @@ export function createLibrary({ db, catalog, config, limits }) {
     },
     // Curated works plus verified uploads: the pool blind comparisons draw from.
     eligible(taskId, snapshot = null) {
-      return [...(snapshot ?? catalog.snapshot()).works(taskId), ...q.worksOfTask.all(taskId).map(fromRow).filter(isEligible)];
+      return [...(snapshot ?? catalog.snapshot()).works(taskId), ...q.worksOfTask.all(taskId).map(fromRow)].filter(isEligible);
     },
     uploads() {
       return q.works.all().map(fromRow);
@@ -273,9 +294,68 @@ export function createLibrary({ db, catalog, config, limits }) {
       };
     },
 
+    adminWork(work) {
+      const flags = flagsOf(work);
+      const override = work.curated ? q.override.get(work.taskId, work.id) : null;
+      return {
+        ...this.toPublic(work, { role: 'admin' }), source: work.curated ? 'curated' : 'upload',
+        ...flags, calibration_gallery: work.curated ? (override?.calibration_gallery ? JSON.parse(override.calibration_gallery) : null) : work.trial.calibration ?? null,
+        calibration_arena: work.curated ? (override?.calibration_arena ? JSON.parse(override.calibration_arena) : null) : work.calibrationArena,
+        has_calibration_gallery: Boolean(work.curated ? override?.calibration_gallery : work.trial.calibration),
+        has_calibration_arena: Boolean(work.curated ? override?.calibration_arena : work.calibrationArena),
+      };
+    },
+
+    setFaceSettings(admin, taskId, id, body) {
+      const work = this.work(taskId, id);
+      if (!work) fail(404, '作品不存在', 'not_found');
+      if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length ||
+        Object.keys(body).some((key) => !['show_gallery', 'show_arena'].includes(key)) ||
+        Object.values(body).some((value) => typeof value !== 'boolean')) fail(400, '门面开关无效', 'invalid_face_settings');
+      const current = flagsOf(work);
+      const gallery = body.show_gallery ?? current.show_gallery;
+      const arena = body.show_arena ?? current.show_arena;
+      transaction(db, () => {
+        if (work.curated) q.setOverride.run(taskId, id, Number(gallery), Number(arena), admin.id, Date.now());
+        else q.faceSettings.run(Number(gallery), Number(arena), gallery && arena ? 'both' : gallery ? 'show2' : arena ? 'show1' : 'hidden', Date.now(), id);
+        audit(admin, 'face-settings', work, JSON.stringify({ show_gallery: gallery, show_arena: arena }));
+      });
+      return this.adminWork(this.work(taskId, id));
+    },
+
+    setFaceCalibration(admin, taskId, id, face, patch) {
+      const work = this.work(taskId, id);
+      if (!work) fail(404, '作品不存在', 'not_found');
+      if (!['gallery', 'arena'].includes(face)) fail(400, '门面参数无效', 'invalid_face');
+      if (patch !== null && (!plainObject(patch) || !Object.keys(patch).length ||
+        Object.keys(patch).some((key) => !['framing', 'camera'].includes(key)) ||
+        (Object.hasOwn(patch, 'framing') && patch.framing !== null && !validFraming(patch.framing)) ||
+        (Object.hasOwn(patch, 'camera') && patch.camera !== null && !validCamera(patch.camera)))) fail(400, '校准数据无效', 'invalid_calibration');
+      const previous = this.adminWork(work)[`calibration_${face}`] ?? {};
+      const next = patch === null ? null : { ...previous, ...patch };
+      if (next) for (const key of Object.keys(next)) if (next[key] === null) delete next[key];
+      const value = next && Object.keys(next).length ? next : null;
+      transaction(db, () => {
+        if (work.curated) {
+          const old = q.override.get(taskId, id);
+          q.setCuratedCalibration.run(taskId, id,
+            face === 'gallery' ? (value ? JSON.stringify(value) : null) : old?.calibration_gallery ?? null,
+            face === 'arena' ? (value ? JSON.stringify(value) : null) : old?.calibration_arena ?? null,
+            admin.id, Date.now());
+        } else if (face === 'arena') q.arenaCalibration.run(value ? JSON.stringify(value) : null, Date.now(), id);
+        else {
+          const trial = { ...work.trial };
+          if (value) trial.calibration = value; else delete trial.calibration;
+          q.calibration.run(JSON.stringify(trial), Date.now(), id);
+        }
+        audit(admin, 'calibration', work, `${face}：${JSON.stringify(value)}`);
+      });
+      return value;
+    },
+
     getCalibration(viewer, id) {
       const row = q.work.get(id);
-      if (!row || ((row.status !== 'verified' || row.audience === 'hidden') && viewer?.id !== row.owner_id && viewer?.role !== 'admin')) fail(404, '作品不存在');
+      if (!row || ((row.status !== 'verified' || !row.show_gallery) && viewer?.id !== row.owner_id && viewer?.role !== 'admin')) fail(404, '作品不存在');
       return JSON.parse(row.trial).calibration ?? null;
     },
 
@@ -401,10 +481,19 @@ export function createLibrary({ db, catalog, config, limits }) {
       const effort = body.effort !== undefined ? effortOf(body.effort) : work.effort;
       const audience = body.audience === undefined ? work.audience : String(body.audience);
       if (!['hidden', 'show1', 'show2', 'both'].includes(audience)) fail(400, '展示站点无效');
-      if (work.audience === 'hidden' && status === 'verified' && audience === 'hidden') fail(400, '请选择审核通过后展示的网站');
-      if (audience !== 'hidden' && status !== 'verified' && work.audience === 'hidden') fail(400, '隐藏作品须先审核通过才能发布');
+      for (const key of ['show_gallery', 'show_arena']) if (body[key] !== undefined && typeof body[key] !== 'boolean') fail(400, '门面开关无效', 'invalid_face_settings');
+      const fromAudience = { hidden: [false, false], show1: [false, true], show2: [true, false], both: [true, true] }[audience];
+      const gallery = body.show_gallery ?? (body.audience === undefined ? work.showGallery : fromAudience[0]);
+      const arena = body.show_arena ?? (body.audience === undefined ? work.showArena : fromAudience[1]);
+      const nextAudience = gallery && arena ? 'both' : gallery ? 'show2' : arena ? 'show1' : 'hidden';
+      if (work.audience === 'hidden' && status === 'verified' && nextAudience === 'hidden' && body.show_gallery === undefined && body.show_arena === undefined) fail(400, '请选择审核通过后展示的网站');
+      if (nextAudience !== 'hidden' && status !== 'verified' && work.audience === 'hidden') fail(400, '隐藏作品须先审核通过才能发布');
+      const title = body.title === undefined ? work.title : clip(body.title, 40);
+      if (!title) fail(400, '请填写作品标题');
+      const summary = body.summary === undefined ? work.summary : clip(body.summary, 200);
       const now = Date.now();
-      q.review.run(status, status === 'verified' ? '' : reason, who.modelId, who.modelName, who.vendor, effort, audience, admin.id, now, now, id);
+      q.review.run(status, status === 'verified' ? '' : reason, who.modelId, who.modelName, who.vendor, effort,
+        nextAudience, Number(gallery), Number(arena), title, summary, admin.id, now, now, id);
       const updated = upload(taskId, id);
       const labels = { verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证' };
       audit(admin, status, updated, [labels[status], reason].filter(Boolean).join('：'));
@@ -437,8 +526,7 @@ export function createLibrary({ db, catalog, config, limits }) {
 
     reactionSummary(user, site = 'show2') {
       const counts = {};
-      const shown = (row) => Boolean(catalog.work(row.task_id, row.work_id)) && site === 'show2' ||
-        visibleTo(upload(row.task_id, row.work_id), site);
+      const shown = (row) => visibleTo(catalog.work(row.task_id, row.work_id) ?? upload(row.task_id, row.work_id), site);
       for (const row of q.reactionCounts.all()) if (shown(row)) (counts[`${row.task_id}/${row.work_id}`] ??= {})[row.emoji] = row.n;
       const mine = {};
       if (user) for (const row of q.myReactions.all(user.id)) if (shown(row)) (mine[`${row.task_id}/${row.work_id}`] ??= []).push(row.emoji);

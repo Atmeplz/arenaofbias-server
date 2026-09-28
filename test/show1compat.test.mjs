@@ -132,7 +132,7 @@ test('v8 migrates a v7 database: vote sources, comment sides and the new tables'
   } finally { raw.close(); }
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 8);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 9);
     assert.equal(db.prepare("SELECT source FROM votes WHERE id = 'arena-vote'").get().source, 'arena');
     assert.equal(db.prepare("SELECT source FROM votes WHERE id = 'legacy-vote'").get().source, 'legacy');
     assert.equal(db.prepare("SELECT compat_mode FROM votes WHERE id = 'arena-vote'").get().compat_mode, null);
@@ -176,6 +176,35 @@ describe('show1 compat endpoints', () => {
     const works = await call(base, 'GET', '/api/works');
     assert.equal(works.data.works.length, 4);
     assert.equal(works.data.works[0].id, '001-a');
+  }));
+
+  test('arena editorial overlays only its matching prompt; snapshot works stay unchanged', () => withServer({}, async ({ db, base }) => {
+    const before = await call(base, 'GET', '/api/works');
+    db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
+      VALUES (?, 'arena', ?, ?, 'admin', ?)`).run('show1-001', '新点评', JSON.stringify([0, 0, 0, 0.5, 0.5, 0]), Date.now());
+    const prompts = (await call(base, 'GET', '/api/prompts')).data.prompts;
+    assert.equal(prompts[0].commentary, '新点评');
+    assert.deepEqual(prompts[0].weights, [0, 0, 0, 0.5, 0.5, 0]);
+    assert.deepEqual(prompts[1], fixtureSnapshot().prompts[1]);
+    assert.deepEqual((await call(base, 'GET', '/api/works')).data, before.data);
+  }));
+
+  test('editorial weights re-weight vote promptWeights (radar replay follows current weights)', () => withServer({
+    snapshot: fixtureSnapshot({ entertainment: [
+      { id: 'sv1', promptId: '001', winnerRid: '001-a', winnerMid: 'model-a', loserRid: '001-b', loserMid: 'model-b', mode: 'blind', ts: 1, outcome: 'win', winnerName: 'Model A', loserName: 'Model B', promptKind: 'web', promptWeights: [0.3, 0, 0.6, 0, 0, 0.1] },
+    ], formal: [] }),
+  }, async ({ db, base }) => {
+    const before = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes[0];
+    assert.deepEqual(before.promptWeights, [0.3, 0, 0.6, 0, 0, 0.1]);
+    db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
+      VALUES (?, 'arena', ?, ?, 'admin', ?)`).run('show1-001', '', JSON.stringify([0, 0, 0, 0.5, 0.5, 0]), Date.now());
+    const after = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes[0];
+    assert.deepEqual(after.promptWeights, [0, 0, 0, 0.5, 0.5, 0]);
+    // 另一道题没有覆盖，权重保持快照值
+    db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
+      VALUES (?, 'arena', ?, ?, 'admin', ?)`).run('chinese-architecture', '', JSON.stringify([1, 0, 0, 0, 0, 0]), Date.now());
+    const still = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes[0];
+    assert.deepEqual(still.promptWeights, [0, 0, 0, 0.5, 0.5, 0]);
   }));
 
   test('POST /api/votes enforces the old validation, dedup and storage rules', () => withServer({}, async ({ db, auth, base }) => {
