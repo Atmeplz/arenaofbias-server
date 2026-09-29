@@ -114,6 +114,31 @@ test('admin API merges curated and upload works, applies face settings, calibrat
   assert.ok(platform.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('submit','verified','face-settings','calibration')").get().n >= 6);
 }));
 
+test('admin batch face settings update curated and uploaded works atomically with one audit per work', async () => withPlatform(async ({ platform, call }) => {
+  const upload = await call('root', 'POST', '/api/admin/works/upload?task=one&name=work.html&title=代传作品&modelName=模型丙', html, true);
+  const id = upload.data.work.id;
+  const path = '/api/admin/works/batch-face-settings';
+  const works = [{ task: 'one', id: 'a' }, { task: 'one', id }];
+  const auditCount = () => platform.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'face-settings'").get().n;
+  assert.equal((await call('voter', 'POST', path, { works, show_gallery: false })).status, 403);
+  const before = auditCount();
+  const changed = await call('root', 'POST', path, { works, show_gallery: false, show_arena: true });
+  assert.equal(changed.status, 200, JSON.stringify(changed.data));
+  assert.deepEqual(changed.data.works.map((work) => [work.id, work.show_gallery, work.show_arena]), [
+    ['a', false, true], [id, false, true],
+  ]);
+  assert.equal(auditCount(), before + 2);
+  assert.equal(platform.db.prepare('SELECT show_gallery FROM work_overrides WHERE work_id = ?').get('a').show_gallery, 0);
+  assert.equal(platform.db.prepare('SELECT show_gallery FROM works WHERE id = ?').get(id).show_gallery, 0);
+  const failed = await call('root', 'POST', path, { works: [works[0], { task: 'one', id: 'missing' }], show_gallery: true });
+  assert.equal(failed.status, 404);
+  assert.equal(platform.db.prepare('SELECT show_gallery FROM work_overrides WHERE work_id = ?').get('a').show_gallery, 0);
+  assert.equal(auditCount(), before + 2, 'the failed batch rolls back its audit too');
+  const tooMany = await call('root', 'POST', path, { works: Array.from({ length: 201 }, () => works[0]), show_gallery: true });
+  assert.equal(tooMany.status, 400);
+  assert.equal(tooMany.data.code, 'invalid_work_list');
+}));
+
 test('editorial validates weights, traffic aggregates, and arena switches remove matches and counted votes', async () => withPlatform(async ({ platform, call }) => {
   const baseline = {
     prompts: (await call('voter', 'GET', '/api/prompts')).data,

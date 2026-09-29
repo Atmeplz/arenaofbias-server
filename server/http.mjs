@@ -51,7 +51,10 @@ export function parseCookies(header = '') {
   const cookies = {};
   for (const part of header.split(';')) {
     const index = part.indexOf('=');
-    if (index > 0) cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+    if (index > 0) {
+      try { cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim()); }
+      catch { /* Skip malformed cookies without losing the remaining valid ones. */ }
+    }
   }
   return cookies;
 }
@@ -90,7 +93,10 @@ export function createRouter() {
         if (!found) continue;
         if (route.method !== method && !(route.method === 'GET' && method === 'HEAD')) { allowed = true; continue; }
         const params = {};
-        route.keys.forEach((key, i) => { params[key] = decodeURIComponent(found[i + 1]); });
+        route.keys.forEach((key, i) => {
+          try { params[key] = decodeURIComponent(found[i + 1]); }
+          catch { fail(400, '路径参数编码无效'); }
+        });
         return { handler: route.handler, params };
       }
       return allowed ? { methodNotAllowed: true } : null;

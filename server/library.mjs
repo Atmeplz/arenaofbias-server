@@ -312,7 +312,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       };
     },
 
-    setFaceSettings(admin, taskId, id, body) {
+    setFaceSettings(admin, taskId, id, body, withinTransaction = false) {
       const work = this.work(taskId, id);
       if (!work) fail(404, '作品不存在', 'not_found');
       if (!body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length ||
@@ -321,12 +321,21 @@ export function createLibrary({ db, catalog, config, limits }) {
       const current = flagsOf(work);
       const gallery = body.show_gallery ?? current.show_gallery;
       const arena = body.show_arena ?? current.show_arena;
-      transaction(db, () => {
+      const apply = () => {
         if (work.curated) q.setOverride.run(taskId, id, Number(gallery), Number(arena), admin.id, Date.now());
         else q.faceSettings.run(Number(gallery), Number(arena), gallery && arena ? 'both' : gallery ? 'show2' : arena ? 'show1' : 'hidden', Date.now(), id);
         audit(admin, 'face-settings', work, JSON.stringify({ show_gallery: gallery, show_arena: arena }));
-      });
+      };
+      if (withinTransaction) apply();
+      else transaction(db, apply);
       return this.adminWork(this.work(taskId, id));
+    },
+
+    batchSetFaceSettings(admin, items, settings) {
+      if (!Array.isArray(items) || !items.length || items.length > 200 ||
+        items.some((item) => !plainObject(item) || typeof item.task !== 'string' || !item.task || typeof item.id !== 'string' || !item.id))
+        fail(400, '作品列表无效（每次最多 200 件）', 'invalid_work_list');
+      return transaction(db, () => items.map(({ task, id }) => this.setFaceSettings(admin, task, id, settings, true)));
     },
 
     setFaceCalibration(admin, taskId, id, face, patch) {

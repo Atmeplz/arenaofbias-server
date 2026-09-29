@@ -27,7 +27,7 @@
 | --- | --- |
 | 代码默认 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180`；启动仍需提供 `DIST_DIR` 数据包 |
 | 2026-09-28 本机联调 | 前端 `http://localhost:4175`；API 与媒体 `http://localhost:5190`；作品内容 `http://{token}.localhost:5191`。后端设 `PORT=5190`、`CONTENT_PORT=5191`、`SITE_ORIGINS=http://localhost:4175`、`DIST_DIR=<已构建数据包目录>`、`DATA_DIR=<隔离运行目录>`、`CAPTURE=0`；前端 API base URL 指向 `http://localhost:5190/` |
-| 生产环境 | **待拍板（占位）**：API 站点域与作品内容域需为**两个不同的可注册域**（作品域需泛域名，形如 `*.w.example.com`），以域名隔离作为作品沙盒的根基。生产域名尚未在公网验证，列为早期验证项 |
+| 生产环境 | 共享后端已在 `arenaofbias.icu/api` 和 `api.arenaofbias.icu` 运行；线上 `serverVersion=dev`，部署提交未知，需向 kme7kme7-prog 确认。作品内容仍需按独立泛域名隔离，具体线上配置以部署现场为准。 |
 
 作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。投稿 `captures` / `cover` 返回相对路径 `media/...`，前端以 API 站点根解析；馆藏 `scene` 路径取自画廊所用数据包。
 
@@ -49,7 +49,7 @@
 ```
 
 - `error` 恒存在，面向最终用户，可直接展示。
-- `code` 仅在少数业务错误上出现：`"insufficient"`（对战池不足）、`"exhausted"`（该用户已评完全部组合）、`"datapack_mismatch"`（馆藏版本失配）。前端逻辑判断请用 `code`，不要匹配 `error` 文案。
+- `code` 仅在少数业务错误上出现，例如 `"insufficient"`（对战池不足）、`"exhausted"`（该用户已评完全部组合）。前端逻辑判断请用 `code`，不要匹配 `error` 文案。
 - HTTP 状态码全集：`400`（参数无效）、`401`（未登录 / 凭证错误）、`403`（无权限 / 来源无效）、`404`（不存在）、`405`（方法不允许）、`409`（状态冲突）、`413`（体积超限）、`415`（Content-Type 非 JSON）、`429`（限流 / 待审超限）、`500`（服务端错误，固定文案「服务器出错了，请稍后再试」）。
 - 非 GET/HEAD 的 `/api/*` 请求必须带有可信 `Origin`：请求自身的完整 origin 或 `SITE_ORIGINS` 白名单中的完整 origin（精确协议、主机与端口），否则 `403 请求来源无效`。同源判断只在 `TRUST_PROXY=1` 时使用代理传入的 HTTPS 协议。
 - JSON 请求体默认上限 64 KB；`POST /api/works` 单独放宽至 6 MB（封面以 data URL 内嵌所致）。
@@ -58,6 +58,7 @@
 
 - `SITE_ORIGINS` 同时控制可信前端的凭据 CORS、写请求与作品 `frame-ancestors`；填写不含路径或末尾 `/` 的 origin，以逗号分隔。不反射任意来源，不使用 `*`。
 - 可信来源的 API、媒体与数据包静态响应下发 `Access-Control-Allow-Origin: <origin>`、`Access-Control-Allow-Credentials: true` 与 `Vary: Origin`，包括 API 错误响应。
+- 可信来源的响应还下发 `Access-Control-Expose-Headers: X-Datapack-Stale`，使跨域前端可读取数据包过期提示头。
 - `/api/*` 的 OPTIONS 预检按请求方法匹配已有路由，成功返回 `204`；允许 `Content-Type` 和 `X-Datapack-Version`，缓存 600 秒。未知端点返回 `404`，不支持的方法返回 `405`，外部来源或其它请求头返回 `403`。
 - 非可信来源的读响应不下发许可头；非可信来源的 API 写请求和预检被拒绝。无 Origin 的读请求仍可供服务端与 CLI 使用。
 
@@ -448,7 +449,7 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 - `a` / `b` 为两侧作品的**不透明令牌 origin**（`m` 令牌，对局有效期 3 小时），iframe 直接加载；页面与地址均不泄露作品 / 模型身份。左右顺序随机。
 - `counted`：登录用户恒 `true`，匿名恒 `false`。
 - 对局创建时一次捕获当前馆藏目录和两侧身份。随后切换数据包，旧令牌仍从原目录提供 HTML 与相对资源，旧对局仍可揭晓/投票；部署应保留该目录到相关对局全部过期并经过清理宽限期。
-- 前端在写请求上携带 `X-Datapack-Version: <前端所构建的数据仓库 SHA>`（读请求不带，避免跨源 GET 预检）；创建馆藏对局、馆藏题目草稿及该草稿的正式投稿时，如果该值与服务端当前可信 SHA 不同，返回 `409 + code:"datapack_mismatch"`。已创建对局的投票和社区题目操作不受此检查阻断；缺少请求头保持旧客户端兼容。
+- 前端在写请求上携带 `X-Datapack-Version: <前端所构建的数据仓库 SHA>`（读请求不带，避免跨源 GET 预检）；创建馆藏对局、馆藏题目草稿及该草稿的正式投稿时，如果该值与服务端当前可信 SHA 不同，请求照常处理，响应头增加 `X-Datapack-Stale: 1`，响应体形状不变。对局仍绑定创建时的服务端快照。社区题目不参与此检查；缺少请求头时不增加提示头。
 - 抽样规则：先抽两个不同「模型+档位」配置，再各抽一件作品；偏向对局数少的配置、偏向实力相近者（同档 90% 概率软匹配，分差过大重掷 2 次）；避开上一场两侧作品、本人作品与已评组合。
 - `previous` 缺省时，登录用户自动取本人该题最近一场对局作为「上一场」回避。
 
@@ -568,7 +569,7 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 
 ### 3.17 Show1 历史作品的审核与站点展示（schema v7）
 
-`works.audience` 为 `hidden` / `show1` / `show2` / `both`，保留作兼容字段。v9 起实际可见性由 `show_gallery`、`show_arena` 决定；v8 旧数据升级时按 `audience` 回填。新投稿和管理员代传默认双开；Show1 历史待审作品升级后两个开关关闭。管理员审核通过时可指定门面。后台审核视图可取得随机作品内容令牌用于私密试加载；令牌本身具有预览能力，不应公开转发。
+`works.audience` 为 `hidden` / `show1` / `show2` / `both`，保留作兼容字段。v9 起实际可见性由 `show_gallery`、`show_arena` 决定；v8 旧数据升级时按 `audience` 回填。新投稿和管理员代传默认展览馆开启、竞技场关闭；Show1 历史待审作品升级后两个开关关闭。管理员审核通过时可指定门面。后台审核视图可取得随机作品内容令牌用于私密试加载；令牌本身具有预览能力，不应公开转发。
 
 **`GET /api/show1/works`** —— Show1 公开作品列表，不需要登录、无限流。成功 `200`：`{ "works": [<作品公开视图>], "reactions": { "counts": {}, "mine": {} } }`。只返回 `verified` 且 `show_arena=1` 的 SQLite 作品；`/api/bootstrap.works` 只看 `show_gallery`。竞技场盲评池同样使用 `show_arena`。Show1 题目定义仍由数据包负责，此接口不创建题目。
 
@@ -586,9 +587,11 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 { "works": [{ "task": "one", "id": "a", "source": "curated", "status": "verified", "show_gallery": true, "show_arena": true, "calibration_gallery": null, "calibration_arena": null, "has_calibration_gallery": false, "has_calibration_arena": false }], "total": 1, "page": 1, "pageSize": 30 }
 ```
 
-作品对象还含原有管理员作品视图字段。精选开关和取景先读 `work_overrides`，缺失时两个开关默认开启。查询错误：`400 invalid_query`、`404 not_found`（题目不存在）。
+作品对象还含原有管理员作品视图字段。精选开关和取景先读 `work_overrides`，缺失时展览馆开关默认开启、竞技场开关默认关闭。查询错误：`400 invalid_query`、`404 not_found`（题目不存在）。
 
 **`POST /api/admin/works/:task/:id/face-settings`** 请求 `{ "show_gallery": false, "show_arena": true }`，可只给其中一个布尔键。投稿写 `works` 并同步兼容 `audience`；精选 upsert `work_overrides`，不修改数据包。响应 `{ "work": <合并管理员作品视图> }`。错误：`400 invalid_face_settings`、`404 not_found`、`429`。
+
+**`POST /api/admin/works/batch-face-settings`** 仅管理员可用，使用 write 限流。请求 `{ "works": [{ "task": "题目 ID", "id": "作品 ID" }], "show_gallery": false, "show_arena": true }`，两个开关至少给一个，且只能为布尔值；一次须选 1–200 件。复用单件开关逻辑，在同一个数据库事务内更新所有作品并为每件写一条 `face-settings` audit；任一作品不存在或参数无效时整批回滚。成功 `200`：`{ "works": [<合并管理员作品视图>, …] }`，顺序与请求一致。错误：`401` / `403`、`400 invalid_work_list|invalid_face_settings`、`404 not_found`、`429`。
 
 **`POST /api/admin/works/:task/:id/calibration`** 请求 `{ "face": "gallery" | "arena", "calibration": { "framing": { "width": 1440, "height": 900, "zoom": 1, "offsetX": 0, "offsetY": 0 }, "camera": { "position": [0,0,5], "target": [0,0,0] } } }`。`calibration` 可为 `null` 清空；对象可只给其中一项，单项为 `null` 则删除该项。投稿画廊取景仍在 `trial.calibration`，竞技场取景在 `works.calibration_arena`；精选取景写覆盖表的两个附加列。响应 `{ "task": "one", "id": "a", "face": "arena", "calibration": <当前对象或 null> }`。错误：`400 invalid_face|invalid_calibration`、`404 not_found`、`429`。校验范围沿用 3.16 节。
 
@@ -598,9 +601,30 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 
 **`GET /api/admin/traffic?days=N`** `N` 默认 30，范围 1–90。响应 `{ "days": 30, "daily": [{ "day": "2026-09-28", "pv": 12, "uniqueIps": 8 }], "paths": [{ "path": "/", "pv": 9 }], "users": { "total": 24, "new": 2 } }`。`daily` 按 UTC 日补齐零值；`paths` 最多 20 条；错误 `400 invalid_query`。
 
-**`POST /api/admin/works/upload`** 原始 HTML 或 ZIP 请求体，查询参数 `task`、`name`（含扩展名）、`title`、`modelId` 或 `modelName`、`summary`、`tool`、`template`、`show_gallery=0|1`、`show_arena=0|1`。沿用草稿检查和投稿存储，直接核验为 `verified`，默认双开。响应 `{ "work": <合并管理员作品视图> }`。错误沿用 `/api/drafts` 和 `/api/works`，另有 `400 invalid_face_settings`、`413`、`429`。该流程在 audit 中留下 `submit` 和 `verified` 两条记录。
+**`POST /api/admin/works/upload`** 原始 HTML 或 ZIP 请求体，查询参数 `task`、`name`（含扩展名）、`title`、`modelId` 或 `modelName`、`summary`、`tool`、`template`、`show_gallery=0|1`、`show_arena=0|1`。沿用草稿检查和投稿存储，直接核验为 `verified`；开关缺省时展览馆开启、竞技场关闭。响应 `{ "work": <合并管理员作品视图> }`。错误沿用 `/api/drafts` 和 `/api/works`，另有 `400 invalid_face_settings`、`413`、`429`。该流程在 audit 中留下 `submit` 和 `verified` 两条记录。
 
-竞技场配对和 Bradley–Terry 计分都只纳入当前 `show_arena=1` 的已验证作品；精选没有覆盖记录时默认开启。`votes.source='arena'` 的限制不变。Show1 娱乐榜仍从全量历史票回放。
+竞技场配对和 Bradley–Terry 计分都只纳入当前 `show_arena=1` 的已验证作品；精选没有覆盖记录时竞技场开关默认关闭。`votes.source='arena'` 的限制不变。Show1 娱乐榜仍从全量历史票回放。
+
+### 3.19 管理员收件箱、作品编辑与收录
+
+以下 API 均须管理员会话；写请求遵循同源检查和 write 限流。收件箱位于 `DATA_DIR/inbox`，只保存待登记的 HTML/ZIP，不会因上传本身发布作品。
+
+- **`GET /api/admin/inbox`** 返回 `{ "entries": [...] }`，按加入时间升序。每项含 `id`、原文件名 `name`、`kind`（HTML/ZIP）、字节数 `size`、毫秒时间戳 `addedAt`、从文件名推断的 `suggest: { title, model }` 和预览路径 `preview`。
+- **`POST /api/admin/inbox?name=<文件名>[&overwrite=1]`** 请求体为原始 HTML 或 ZIP，最多 30 MB；文件名只接受 `.html`、`.htm`、`.zip`（含「标题，模型.html」格式）。上传前执行包检查；同名文件默认返回 `409 inbox_conflict`，`overwrite=1` 覆盖。成功 `200`：`{ "ok": true, "name": "…" }`，写 `inbox-upload` audit。
+- **`GET /admin/inbox/:id/...`** 是预览文件路径，不是 API；仅管理员可读取，其他用户或文件不存在时返回纯文本 `404`。`/file` 返回原始文件；ZIP 的预览路径由列表给出，响应使用 `no-store`。
+- **`POST /api/admin/inbox/register`** JSON 请求含 `id`、`task`、可选的 `title`、`summary`、`modelId` 或 `modelName`、`effort`；标题和模型名可从文件名建议值补齐。走现有草稿检查与投稿流程。缺省登记为 `unverified` 且两个门面均关闭；`publish: true` 时直接核验为 `verified`，缺省展览馆开启、竞技场关闭，可用 `show_gallery` / `show_arena` 指定。成功 `200`：`{ "work": <管理员作品视图> }`，移除收件箱文件并写 `inbox-register` audit；无效或已移除的 `id` 返回 `404`。
+- **`DELETE /api/admin/inbox?id=<收件箱 ID>`** 移除暂存文件，成功 `200`：`{ "ok": true }`，写 `inbox-remove` audit；文件不存在返回 `404`。
+- **`POST /api/admin/works/:task/:id/meta`** 仅编辑 SQLite 投稿，不编辑馆藏。JSON 请求可含 `title`、`summary`、`modelName`、`modelId`、`effort` 的任意非空组合；标题不能为空，`modelId` 须存在于目录。成功 `200`：`{ "work": <管理员作品视图> }`，写 `meta` audit；无效字段或内容返回 `400`，投稿不存在或目标为馆藏返回 `404 not_found`。
+- **`POST /api/admin/works/:task/:id/curate`** 仅对已核验、尚未收录、且题目在馆藏数据包内的 SQLite 投稿有效。服务端将作品和目录记录打包到配置的数据仓库 `CURATE_REPO_DIR` 的 `intake/<task>-<slug>` 分支，并执行 Git push；成功 `200`：`{ "curatedId": "<task>/<slug>", "branch": "intake/<task>-<slug>" }`。随后为原投稿设置 `curated_as`，使其退出公开列表及配对池；真实截图、审查、合并和发布仍须人工完成。作品不存在返回 `404 not_found`，状态或题目不符返回 `409`，数据仓库目录未配置返回 `503`。
+
+### 3.20 Show1 猜模型接口
+
+这些端点无需登录；写请求仍须可信 Origin 和 JSON 请求体，使用每分钟 60 次的 matches 限流桶（若单独配置 guess 桶则优先）。日期采用 UTC+8 日历日；公开模型字段为 `id`、`name`、`vendor`、`released`、`openWeights`、`contextK`、`modalities`、`reasoning`、`priceOut`、`priceTier`、`difficulty`。
+
+- **`GET /api/guess/today`** 返回 `200`：`{ "dayKey": "YYYY-MM-DD", "dayNumber": 0, "attributes": ["…"], "models": [<公开模型>] }`。不下发当天答案。
+- **`POST /api/guess/check`** 请求 `{ "guessId": "模型 ID 或名称", "gameId": "可选练习局 ID", "final": false }`；不带 `gameId` 时按当天每日池判定，带 `gameId` 时按内存练习局判定。成功 `200`：`{ "feedback": <逐属性反馈>, "answer": <公开模型或 null> }`；猜中或 `final: true` 才附答案。未知模型返回 `400 unknown-model`，练习局不存在返回 `404 game-expired`。
+- **`POST /api/guess/practice/start`** 请求 `{ "difficulty": 1 }`；支持 1–4 档，非法值回落到 1。成功 `200`：`{ "gameId": "<24 位十六进制>" }`；练习局只保存在进程内，重启后失效。所选难度无可用模型时返回 `503`。
+- **`POST /api/guess/result`** 请求 `{ "won": true, "attempts": 3, "dayKey": "可选 YYYY-MM-DD" }`，`attempts` 须为 1–8 的整数，日期须在游戏纪元 `2026-09-13` 至当天之间；缺省为当天。服务端自行派生 `answer_id`，将每日结果写入 `guess_results`（练习结果不通过此端点上报）。成功 `204`、无响应体；步数或日期无效返回 `400`。
 
 ---
 
