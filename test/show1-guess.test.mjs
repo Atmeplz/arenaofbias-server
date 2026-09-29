@@ -3,9 +3,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
 import { after, before, describe, test } from 'node:test';
 import { HttpError, createRouter, fail, sendJson } from '../server/http.mjs';
-import { openDatabase } from '../server/db.mjs';
+import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 import {
   ATTRIBUTE_KEYS,
   GUESS_DIFFICULTIES,
@@ -26,6 +27,37 @@ import { registerShow1Guess } from '../server/show1/guess.mjs';
 const GOLDEN = JSON.parse(
   readFileSync(new URL('./fixtures/show1-golden/guess_today.json', import.meta.url), 'utf8'),
 );
+
+test('guess result migration preserves rows and marks later IP/day or user/day records', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    for (const step of MIGRATIONS.slice(0, -1)) {
+      if (typeof step === 'function') step(db);
+      else db.exec(step);
+    }
+    const add = db.prepare(`INSERT INTO guess_results (id, day_key, ip_hash, user_id, created_at)
+      VALUES (?, '2026-09-20', ?, ?, ?)`);
+    add.run('first', 'ip-a', 'u-a', 1);
+    add.run('later-ip', 'ip-a', 'u-b', 2);
+    add.run('later-user', 'ip-b', 'u-a', 3);
+    add.run('other', 'ip-c', 'u-c', 4);
+    const before = db.prepare('SELECT COUNT(*) AS n FROM guess_results').get().n;
+    MIGRATIONS.at(-1)(db);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM guess_results').get().n, before);
+    assert.deepEqual(db.prepare('SELECT id, superseded FROM guess_results ORDER BY created_at').all().map((row) => ({ ...row })), [
+      { id: 'first', superseded: 0 }, { id: 'later-ip', superseded: 1 },
+      { id: 'later-user', superseded: 1 }, { id: 'other', superseded: 0 },
+    ]);
+    assert.deepEqual(db.prepare('PRAGMA index_list(guess_results)').all().filter((row) => row.name.startsWith('guess_result_')).map((row) => row.partial), [1, 1]);
+    MIGRATIONS.at(-1)(db);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM guess_results').get().n, before);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM guess_results WHERE superseded = 1').get().n, 2);
+    const addArchived = db.prepare(`INSERT INTO guess_results (id, day_key, ip_hash, user_id, created_at, superseded)
+      VALUES (?, '2026-09-20', 'ip-a', 'u-a', 5, ?)`);
+    addArchived.run('archived', 1);
+    assert.throws(() => addArchived.run('duplicate-active', 0), /UNIQUE constraint failed/);
+  } finally { db.close(); }
+});
 
 // ── 纯逻辑：judge() 逐属性 hit/near/miss/箭头 ──
 
@@ -394,6 +426,10 @@ describe('guess endpoints', () => {
     assert.match(row.ip_hash, /^[0-9a-f]{64}$/);
     assert.equal(row.user_id, user.id);
     assert.ok(Number.isInteger(row.created_at));
+    const repeat = await post('/api/guess/result', { won: false, attempts: 8 });
+    assert.equal(repeat.status, 204);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM guess_results WHERE day_key = ?').get(todayKey).n, 1);
+    assert.equal(db.prepare('SELECT won, attempts FROM guess_results WHERE day_key = ?').get(todayKey).won, 1);
   });
 
   test('POST /api/guess/result：显式 dayKey 按该日派生 answer_id', async () => {
@@ -424,5 +460,14 @@ describe('guess endpoints', () => {
     const r = await post('/api/guess/result', { won: true, attempts: 1, dayKey: tomorrow });
     assert.equal(r.status, 400);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM guess_results').get().n, before);
+  });
+
+  test('POST /api/guess/result：每 IP 超过一分钟额度返回 429', async () => {
+    let limited = false;
+    for (let i = 0; i < 25; i++) {
+      const result = await post('/api/guess/result', { won: true, attempts: 1 });
+      if (result.status === 429) { limited = true; break; }
+    }
+    assert.equal(limited, true);
   });
 });

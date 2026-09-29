@@ -27,15 +27,15 @@
 | --- | --- |
 | 代码默认 | `http://localhost:5173`（API 与媒体）；作品内容为 `http://{token}.localhost:5180`；启动仍需提供 `DIST_DIR` 数据包 |
 | 2026-09-28 本机联调 | 前端 `http://localhost:4175`；API 与媒体 `http://localhost:5190`；作品内容 `http://{token}.localhost:5191`。后端设 `PORT=5190`、`CONTENT_PORT=5191`、`SITE_ORIGINS=http://localhost:4175`、`DIST_DIR=<已构建数据包目录>`、`DATA_DIR=<隔离运行目录>`、`CAPTURE=0`；前端 API base URL 指向 `http://localhost:5190/` |
-| 生产环境 | 共享后端已在 `arenaofbias.icu/api` 和 `api.arenaofbias.icu` 运行；线上 `serverVersion=dev`，部署提交未知，需向 kme7kme7-prog 确认。作品内容仍需按独立泛域名隔离，具体线上配置以部署现场为准。 |
+| 生产环境 | 共享后端已在 `arenaofbias.icu/api` 和 `api.arenaofbias.icu` 运行；当前已核实线上部署 `a1564ff`、数据包 `574b17e…`，由 systemd `arenaofbias-server` 管理，API 监听 `127.0.0.1:5273`、作品监听 `5180`。作品域名仍待迁至独立的可注册主域。 |
 
 作品内容 URL 不写在各端点文档里逐个列出，而是由响应字段（`bootstrap.site.content`、作品对象的 `scene`、对战对象的 `a`/`b`）以完整 URL 形式下发，前端直接消费，不自行拼接。投稿 `captures` / `cover` 返回相对路径 `media/...`，前端以 API 站点根解析；馆藏 `scene` 路径取自画廊所用数据包。
 
 ### 1.3 认证方式
 
 - 认证基于 **Cookie 会话**。注册 / 登录成功后，响应头种下：
-  `Set-Cookie: sp_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`（30 天；`COOKIE_SECURE=1` 时追加 `Secure`）。
-- Cookie 名为 `sp_session`，HttpOnly，前端脚本不可读；服务端只存其 SHA-256。
+  `COOKIE_SECURE=1` 时为 `Set-Cookie: __Host-sp_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000; Secure`（无 Domain）；未启用 Secure 的本地环境仍用 `sp_session`。
+- 会话 Cookie 为 HttpOnly，前端脚本不可读；服务端只存其 SHA-256。重名会话 Cookie 按未登录处理。
 - 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'include'`，XHR 使用 `withCredentials = true`）。`COOKIE_SAME_SITE` 支持 `Lax`（默认）、`Strict`、`None`；跨站 HTTPS 部署设 `None` 并开启 `COOKIE_SECURE=1`，否则服务拒绝启动。第三方 Cookie 仍受浏览器设置限制，建议前端与 API 使用同站域名。
 - 登出（`POST /api/auth/logout`）删除服务端会话并下发 `Max-Age=0` 的清空 Cookie。
 - 角色：`member`（默认）与 `admin`。管理员账号只能经 CLI 新建（`npm run admin -- --create <用户名>`，密码从标准输入读取、不回显），或将已有普通账号提权（`npm run admin -- <用户名>` 或管理员角色接口）。公开注册拒绝 `ADMIN_USERNAMES` 中的保留用户名；已有账号登录时仍按该配置同步管理员角色。
@@ -73,6 +73,7 @@
 | write | 120 次 / 分钟 | 用户 ID（未登录时为 IP） | 投稿提交、投票、表情、评论写入/删除、校准写回 |
 | drafts | 12 次 / 10 分钟 | 用户 ID | 上传草稿 |
 | matches | 60 次 / 分钟 | 用户 ID（未登录时为 IP） | 创建对战 |
+| guess result | 20 次 / 分钟 | 客户端 IP | `POST /api/guess/result`，另受 guess/matches 桶约束 |
 | export | 2000 次 / 分钟 | 导出令牌 | 导出元数据及文件；另有每 IP 10000 次 / 分钟兜底 |
 
 `TRUST_PROXY=1` 时 IP 取 `X-Forwarded-For` 首段。限流为单机内存计数，进程重启即清零，多实例部署不共享。
@@ -237,7 +238,7 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 ```
 
 - `site.content` 为作品 origin 模板，`{token}` 占位；前端无需自行替换（`scene` / `preview` 均为替换好的完整 URL），此字段仅供诊断与展示。
-- `datapack` 只在已加载数据包带有有效 GitHub 来源文件时返回真实 SHA；无来源元数据或标为 `local` 的本地包返回 `null`。`catalogDigest` 是实际加载的 `data.json` 原始字节的 SHA-256，本地开发前后端在 `datapack=null` 时可据此比较是否使用同一目录数据版本。`serverVersion` 在进程启动时从 `SERVER_VERSION`、`GITHUB_SHA` 或 Git HEAD 读取一次，均不可用时为 `dev`。
+- `datapack` 只在已加载数据包带有有效 GitHub 来源文件时返回真实 SHA；无来源元数据或标为 `local` 的本地包返回 `null`。`catalogDigest` 是实际加载的 `data.json` 原始字节的 SHA-256，本地开发前后端在 `datapack=null` 时可据此比较是否使用同一目录数据版本。`serverVersion` 在进程启动时优先读取 `SERVER_VERSION`，其次读取部署目录 Git HEAD；非 Git 部署读取 `.server-version`，均不可用时为 `dev`。它标识服务代码，不是数据包版本；数据包以 `datapack` 字段判读，部署后分别核对两者。
 - `works` **包含未验证与存疑投稿**（不含馆藏作品，馆藏经数据包分发），访客可见非特权字段。
 - `arena[题目]`：`works` = 对战池作品数（馆藏 + 已验证投稿），`entries` = 不同「模型+档位」配置数，`uploads` = 该题是否接受上传。
 - 匿名：`user`、`me` 为 `null`，`reactions.mine` 为 `{}`；`review` 仅管理员非 null（`{ "unverified": <待审数> }`）。
@@ -643,7 +644,28 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 - **`GET /api/guess/today`** 返回 `200`：`{ "dayKey": "YYYY-MM-DD", "dayNumber": 0, "attributes": ["…"], "models": [<公开模型>] }`。不下发当天答案。
 - **`POST /api/guess/check`** 请求 `{ "guessId": "模型 ID 或名称", "gameId": "可选练习局 ID", "final": false }`；不带 `gameId` 时按当天每日池判定，带 `gameId` 时按内存练习局判定。成功 `200`：`{ "feedback": <逐属性反馈>, "answer": <公开模型或 null> }`；猜中或 `final: true` 才附答案。未知模型返回 `400 unknown-model`，练习局不存在返回 `404 game-expired`。
 - **`POST /api/guess/practice/start`** 请求 `{ "difficulty": 1 }`；支持 1–4 档，非法值回落到 1。成功 `200`：`{ "gameId": "<24 位十六进制>" }`；练习局只保存在进程内，重启后失效。所选难度无可用模型时返回 `503`。
-- **`POST /api/guess/result`** 请求 `{ "won": true, "attempts": 3, "dayKey": "可选 YYYY-MM-DD" }`，`attempts` 须为 1–8 的整数，日期须在游戏纪元 `2026-09-13` 至当天之间；缺省为当天。服务端自行派生 `answer_id`，将每日结果写入 `guess_results`（练习结果不通过此端点上报）。成功 `204`、无响应体；步数或日期无效返回 `400`。
+- **`POST /api/guess/result`** 请求 `{ "won": true, "attempts": 3, "dayKey": "可选 YYYY-MM-DD" }`，`attempts` 须为 1–8 的整数，日期须在游戏纪元 `2026-09-13` 至当天之间；缺省为当天。服务端自行派生 `answer_id`。按同一 IP 或用户 ID 加日期去重，只计最早一条；迁移前的重复历史行保留并标为 `superseded=1`，不参与有效成绩读取。重复上报仍返回 `204`。另有每 IP 每分钟 20 次限流，超过返回 `429`。练习结果不通过此端点上报；步数或日期无效返回 `400`。`won` 与 `attempts` 是**客户端自报数据**，没有服务端游戏状态验证，不能作为可信成绩或严肃运营统计。
+
+每日答案选择算法及模型数据也随 Show1 前端交付，玩家可以从前端推导答案。这是已知设计边界，当前每日模式只适用于娱乐玩法。
+
+### 3.21 Show1 兼容层
+
+这些端点延续 Show1 的请求与响应形状。写请求遵循本服务 Origin、鉴权与限流规则。只读基础数据来自迁入快照；符合 `show_arena=1` 的已验证新投稿增量进入作品列表。历史娱乐票和新票不进入正式竞技场 Bradley–Terry 榜单。
+
+| 方法与路径 | 请求与响应 |
+| --- | --- |
+| `GET /api/prompts` | `{ prompts: [...] }`；竞技场 editorial 覆盖对应题目的 `commentary`、`weights`。 |
+| `GET /api/works` | `{ works: [...] }`；快照作品加符合条件的 live 投稿。 |
+| `GET /api/votes?scope=entertainment\|formal` | `{ votes: [...] }`；按时间和 ID 合并历史与 live 票，默认娱乐范围。 |
+| `POST /api/votes` | 登录必需；提交 `id`、`promptId`、`winnerRid/Mid`、`loserRid/Mid`、`mode`、`outcome`，成功 `201 { vote }`；同 ID 同票幂等重放，已投同一对返回 `409 pair`；`formal` 仅管理员。 |
+| `GET /api/ratings?scope=entertainment\|formal` | `{ ratings: { [modelId]: number }, games: { [modelId]: number } }`；按兼容票回放 Elo。 |
+| `GET /api/comments?round=<题目编号>` | `{ comments: [...] }`；无效题目 `400`。 |
+| `POST /api/comments` | 登录必需；请求 `id`、`roundId`、`side`、`body`，成功 `201 { comment }`。 |
+| `GET /api/reactions?prompt=<题目编号>` | `{ counts, mine }`；无效题目 `400`。 |
+| `POST /api/reactions` | 登录必需；请求 `id`、`promptId`、`mid`、`kind`，成功 `201 { counts, mine }`；`kind:null` 撤销。 |
+| `POST /api/track` | 最佳努力记录 `path` 浏览量，成功 `204`。 |
+
+旧分享卡端点已移除，访问返回 `404`。兼容层的详细字段可参考 `test/fixtures/show1-golden/` 中的固定响应。
 
 ---
 
@@ -708,16 +730,7 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 
 ---
 
-## 5. 计划新增（未实现，计划中）
-
-以下各项**在当前代码中不存在**，列入契约仅为双方对齐方向；实现前以单独 PR 补充正式文档：
-
-1. **votes 表 `source` 列**：区分票源——娱乐面 / 正式盲评 / 历史迁移。配套迁移追加至 `MIGRATIONS`，排行统计按票源加权或过滤的规则另行拍板。关联现状：当前匿名投票完全不落库（见 3.9），娱乐面开放匿名计票需一并拍板。
-2. **猜模型端点（模一把）**：移植自 Show1——先投票后猜模型或猜对加成的玩法端点，形态待定。
-
----
-
-## 6. 版本与变更纪律
+## 5. 版本与变更纪律
 
 1. 本文档与 `server/` 代码同库维护；**凡契约变更（端点、字段、状态码、限制、数据包结构）必须先改文档、走 PR，经两个前端负责方过目后方可合并**。
 2. **字段只增不减**：已发布响应中的字段不得删除、不得改名、不得改变语义；新增字段默认缺省 / 可空，前端对未知字段一律忽略。破坏性格式变更通过新增端点或显式版本化进行，不原地修改。

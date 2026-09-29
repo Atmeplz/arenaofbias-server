@@ -7,7 +7,7 @@
 //     响应已完整送达，代价只是该连接的 keep-alive 被 destroy 收掉）。
 // guess_results 表由独立迁移创建（v8，见 DESIGN.md），这里假定已存在。
 import { createHash, randomBytes, randomInt } from 'node:crypto';
-import { fail, readJson } from '../http.mjs';
+import { fail, readJson, rateLimit } from '../http.mjs';
 import {
   ATTRIBUTE_KEYS,
   GUESS_DIFFICULTIES,
@@ -39,23 +39,12 @@ const publicGuessModel = (m) => ({
   difficulty: m.difficulty,
 });
 
-// ip_hash = sha256(IP + 当日盐)，盐每天轮换（UTC+8 日历日，与 guessDayKey 同口径）——
-// 不能反推 IP，也不能跨日追踪。与旧服务端 ipHashOfDay 同逻辑。
-let daySalt = '';
-let daySaltDay = '';
-function ipHashOfDay(ip, day) {
-  if (daySaltDay !== day) {
-    daySalt = randomBytes(8).toString('hex');
-    daySaltDay = day;
-  }
-  return createHash('sha256').update(`${daySalt}:${ip}`).digest('hex');
-}
-
 export function registerShow1Guess(router, { db, limit }) {
   // 旧服务端对 check/practice/result 用高频 guess 组限流；映射到共享后端用
   // matches 组（60/分）兜底 write 组。limit.guess 若日后配置则优先。
   const limiter = limit?.guess ?? limit?.matches ?? limit?.write ?? (() => {});
   const throttle = (ctx) => limiter(ctx.user?.id ?? ctx.ip);
+  const resultLimit = rateLimit(60_000, 20);
 
   // 练习局全在内存：重启即失效（前端收到 game-expired 会开新局），不落库。
   const practiceGames = new Map(); // gameId → { answer, createdAt }
@@ -65,6 +54,9 @@ export function registerShow1Guess(router, { db, limit }) {
     `INSERT INTO guess_results (id, day_key, difficulty, answer_id, won, attempts, ip_hash, user_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
+  const daySalt = db.prepare('SELECT salt FROM guess_day_salts WHERE day_key = ?');
+  const createDaySalt = db.prepare('INSERT OR IGNORE INTO guess_day_salts (day_key, salt) VALUES (?, ?)');
+  const firstResult = db.prepare('SELECT 1 FROM guess_results WHERE superseded = 0 AND day_key = ? AND (ip_hash = ? OR user_id = ?) LIMIT 1');
 
   // GET /api/guess/today → 数据集（无答案）+ 今天的日子编号。匿名可读。
   router.on('GET', '/api/guess/today', () => ({
@@ -135,6 +127,7 @@ export function registerShow1Guess(router, { db, limit }) {
   // difficulty 记 0（每日一题）；练习模式不上报。→ 204。
   router.on('POST', '/api/guess/result', async (ctx) => {
     throttle(ctx);
+    resultLimit(ctx.ip || 'unknown');
     const body = await readJson(ctx.req);
     const won = body?.won === true;
     const attempts = Number(body?.attempts);
@@ -154,17 +147,12 @@ export function registerShow1Guess(router, { db, limit }) {
       fail(400, '日期无效');
     const answer = answerForDate(reportDate, dailyPool(GUESS_MODELS));
     const now = Date.now();
-    insertResult.run(
-      randomBytes(8).toString('hex'),
-      reportDay,
-      0, // difficulty=0 表示每日一题
-      answer.id,
-      won ? 1 : 0,
-      attempts,
-      ipHashOfDay(ctx.ip || 'unknown', guessDayKey(new Date(now))),
-      ctx.user?.id ?? null,
-      now,
-    );
+    createDaySalt.run(reportDay, randomBytes(16).toString('hex'));
+    const ipHash = createHash('sha256').update(`${daySalt.get(reportDay).salt}:${ctx.ip || 'unknown'}`).digest('hex');
+    if (!firstResult.get(reportDay, ipHash, ctx.user?.id ?? null)) {
+      insertResult.run(randomBytes(8).toString('hex'), reportDay, 0, answer.id,
+        won ? 1 : 0, attempts, ipHash, ctx.user?.id ?? null, now);
+    }
     ctx.res.writeHead(204, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     ctx.res.end();
     return undefined;

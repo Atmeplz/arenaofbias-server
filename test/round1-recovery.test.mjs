@@ -17,7 +17,7 @@ test('cover write failure keeps the draft and startup moves orphan work director
     admins: [], cdn: [], capture: false, secureCookies: false, trustProxy: false };
   let platform = createPlatform({ config, limits });
   try {
-    const user = platform.auth.register('writer', 'correct horse');
+    const user = await platform.auth.register('writer', 'correct horse');
     const draft = platform.library.createDraft(user, 'one', 'page.html', Buffer.from('<!doctype html><html><body>Test</body></html>'));
     const original = fs.writeFileSync;
     fs.writeFileSync = (path, ...args) => {
