@@ -63,6 +63,8 @@ npm start
 | `TRUST_PROXY` | 关（`1` 开启） | 信任反向代理的客户端 IP 头 |
 | `SERVER_VERSION` | Git HEAD 或 `dev` | 启动时确定的服务端版本，返回在 bootstrap 中 |
 
+收录流程不需要数据仓库路径环境变量：管理员提名后，在 `arenaofbias-data` 中运行返回的命令；数据包发布并切换后，带 `sourceUpload` 的馆藏作品自动接管投稿。
+
 ## API 概览（server/app.mjs）
 
 站点端口（默认 5173）：

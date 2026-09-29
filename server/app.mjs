@@ -39,6 +39,7 @@ export function createPlatform({ config, limits }) {
   const adminService = createAdmin({ db, catalog, library });
   const inbox = createInbox({ library, config, limits });
   const curator = createCurator({ db, catalog, library, config });
+  catalog.onChange(curator.takeover);
   const comments = createComments(db, library);
   const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
@@ -47,6 +48,7 @@ export function createPlatform({ config, limits }) {
     write: rateLimit(60e3, 120),
     drafts: rateLimit(10 * 60e3, 12, '上传太频繁，请稍后再试'),
     matches: rateLimit(60e3, 60),
+    export: rateLimit(60e3, 120),
   };
   const siteCsp = [
     "default-src 'self'",
@@ -335,13 +337,26 @@ export function createPlatform({ config, limits }) {
     limit.write(admin.id);
     return inbox.remove(admin, ctx.url.searchParams.get('id') ?? '');
   });
-  // 收录为馆藏：打包成 intake 分支推到 arenaofbias-data，人工收尾后正式发布。
-  router.on('POST', '/api/admin/works/:task/:id/curate', (ctx) => {
+  router.on('POST', '/api/admin/works/:task/:id/nominate', (ctx) => {
     const admin = adminOnly(ctx);
     limit.write(admin.id);
-    const result = curator.promote(admin, ctx.params.task, ctx.params.id);
-    arena.invalidate();
-    return result;
+    const protocol = config.trustProxy ? String(ctx.req.headers['x-forwarded-proto'] ?? 'http').split(',')[0] : ctx.req.socket.encrypted ? 'https' : 'http';
+    const origin = ctx.req.headers.origin ?? `${protocol}://${ctx.req.headers.host}`;
+    return curator.nominate(admin, ctx.params.task, ctx.params.id, origin);
+  });
+  router.on('DELETE', '/api/admin/works/:task/:id/nominate', (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    return curator.withdraw(admin, ctx.params.task, ctx.params.id);
+  });
+  router.on('GET', '/api/curate/export/:token', (ctx) => {
+    limit.export(ctx.ip);
+    return curator.metadata(ctx.params.token);
+  });
+  router.on('GET', '/api/curate/export/:token/file', (ctx) => {
+    limit.export(ctx.ip);
+    streamFile(ctx.req, ctx.res, curator.file(ctx.params.token, ctx.url.searchParams.get('path')),
+      { 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment', 'Content-Security-Policy': 'sandbox' });
   });
   // Inline edits (title/summary/model) from the works table; curated works stay repo-managed.
   router.on('POST', '/api/admin/works/:task/:id/meta', async (ctx) => {
@@ -450,7 +465,8 @@ export function createPlatform({ config, limits }) {
       if (route.methodNotAllowed) fail(405, '不支持这个操作');
       if (req.method !== 'GET' && req.method !== 'HEAD') assertSameOrigin(req, config);
       const ctx = { req, res, url, params: route.params, ip: clientIp(req, config.trustProxy), user: auth.userFrom(req) };
-      return sendJson(res, 200, (await route.handler(ctx)) ?? { ok: true });
+      const result = await route.handler(ctx);
+      if (!res.headersSent) return sendJson(res, 200, result ?? { ok: true });
     } catch (error) {
       if (res.headersSent) return res.destroy();
       if (error instanceof HttpError) return sendJson(res, error.status, { error: error.message, ...(error.code ? { code: error.code } : {}) });

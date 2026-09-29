@@ -151,7 +151,7 @@ const statusBadge = (status, reason = '') => {
   return info ? `<span class="status status-${status}" title="${esc(reason || info.hint)}">${icon(info.icon)}${info.label}</span>` : '';
 };
 const ACTIONS = { submit: '提交作品', verified: '通过验证', questioned: '标记存疑', unverified: '退回未验证', delete: '删除作品', role: '调整角色',
-  'face-settings': '门面开关', meta: '编辑信息', curate: '收录为馆藏', 'inbox-upload': '收件箱上传', 'inbox-register': '登记入库', 'inbox-remove': '收件箱移除' };
+  'face-settings': '门面开关', meta: '编辑信息', curate: '收录为馆藏', nominate: '提名收录', 'withdraw-nomination': '撤回提名', 'inbox-upload': '收件箱上传', 'inbox-register': '登记入库', 'inbox-remove': '收件箱移除' };
 // Per-face review: the same work is approved separately for the gallery (display)
 // and the arena (blind test). `audience` carries both flags; adminWork rows also
 // carry explicit show_gallery/show_arena.
@@ -658,10 +658,9 @@ function adminWorkRow(w, face = state.system) {
     <td><input type="checkbox" data-select-work="${esc(`${w.task}/${w.id}`)}" aria-label="选择${esc(w.title)}" ${promoted ? 'disabled' : ''}></td>
     <td><div class="admin-work-title">${thumb(w)}<div><b>${esc(w.title)}</b><small>${esc(taskTitle(w.task))}</small></div></div></td>
     <td>${esc(w.modelName)}</td><td>${w.source === 'curated' ? '精选' : '投稿'}</td><td>${statusBadge(w.status)}</td>
-    ${promoted ? `<td><span class="badge" title="已提交收录到 arenaofbias-data 的 intake 分支，等人工合并发布后成为馆藏">收录中</span></td>`
-      : `<td><label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}${face === 'gallery' ? '在展览馆显示' : '进正式盲测'}">${w[`show_${face}`] ? '已开启' : '已关闭'}</label></td>`}
-    ${face === 'arena' ? `<td>${promoted ? '—' : w.status === 'verified' && w.show_arena ? '在正式盲测池' : '不在正式盲测池'}</td>` : '<td>—</td>'}
-    <td><div class="actions"><button class="btn sm" data-calibrate="${esc(w.id)}">${label}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `${curable ? `<button class="btn sm primary" data-curate="${esc(w.id)}" title="打包推到 arenaofbias-data 收录分支，人工合并后成为馆藏">收录为馆藏</button>` : ''}<button class="btn sm" data-edit="${esc(w.id)}">编辑</button><button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
+    <td>${promoted ? '—' : `<label class="face-toggle"><input type="checkbox" data-face-toggle="${esc(w.id)}" ${w[`show_${face}`] ? 'checked' : ''} aria-label="${esc(w.title)}${face === 'gallery' ? '在展览馆显示' : '进正式盲测'}">${w[`show_${face}`] ? '已开启' : '已关闭'}</label>`}</td>
+    ${face === 'arena' ? `<td>${promoted ? '已收录' : w.status === 'verified' && w.show_arena ? '在正式盲测池' : '不在正式盲测池'}</td>` : '<td>—</td>'}
+    <td><div class="actions">${promoted ? '<span class="badge">已收录</span>' : w.nominatedAt ? '<span class="badge">已提名</span>' : ''}<button class="btn sm" data-calibrate="${esc(w.id)}">${label}取景</button><button class="btn sm" data-task-note="${esc(w.task)}">${face === 'gallery' ? '策展笔记' : '题目点评'}</button>${w.source === 'upload' ? `${curable ? `<button class="btn sm primary" data-nominate="${esc(w.id)}">${w.nominatedAt ? '换发命令' : '提名收录'}</button>` : ''}${w.nominatedAt && !promoted ? `<button class="btn sm" data-withdraw="${esc(w.id)}">撤回提名</button>` : ''}<button class="btn sm" data-edit="${esc(w.id)}">编辑</button><button class="btn sm" data-review="${esc(w.id)}">审核</button>` : ''}</div></td>
   </tr>`;
 }
 function systemWorksView() {
@@ -1121,22 +1120,25 @@ document.addEventListener('click', async (e) => {
   if (calibrate) { const w = state.adminWorks.find((item) => item.id === calibrate.dataset.calibrate); if (w) calibrationDialog(w); return; }
   const editBtn = e.target.closest('[data-edit]');
   if (editBtn) { const w = state.adminWorks.find((item) => item.id === editBtn.dataset.edit); if (w) editDialog(w); return; }
-  const curateBtn = e.target.closest('[data-curate]');
-  if (curateBtn) {
-    const w = state.adminWorks.find((item) => item.id === curateBtn.dataset.curate);
+  const nominateBtn = e.target.closest('[data-nominate]');
+  if (nominateBtn) {
+    const w = state.adminWorks.find((item) => item.id === nominateBtn.dataset.nominate);
     if (!w) return;
-    const ok = await confirmDialog({
-      title: `收录「${w.title}」为馆藏？`,
-      message: '服务器会把作品按官方结构打包推到 arenaofbias-data 的 intake 分支并跑 CI；你或朋友人工收尾（截图、审查、合并）后正式发布为馆藏。推送成功后，这件投稿会从公开列表和盲测池退场，由馆藏接管。',
-      confirm: '收录为馆藏',
-    });
-    if (!ok) return;
-    const doneBusy = busy(curateBtn, '正在收录…');
+    const doneBusy = busy(nominateBtn, '正在提名…');
     try {
-      const data = await api(`admin/works/${workKey(w)}/curate`, { method: 'POST' });
-      toast(`已提交收录：${data.curatedId}（分支 ${data.branch}，等合并发布）`);
+      const data = await api(`admin/works/${workKey(w)}/nominate`, { method: 'POST' });
+      const sheet = openDialog({ title: '复制收录命令', body: `<p class="sheet-text">在 arenaofbias-data 仓库执行。命令中的导出令牌 14 天有效，请妥善保管。</p><textarea readonly rows="4" style="width:100%">${esc(data.command)}</textarea><div class="sheet-actions"><button class="btn primary" data-copy-command>复制命令</button></div>` });
+      $('[data-copy-command]', sheet.el).addEventListener('click', async () => { await navigator.clipboard.writeText(data.command); toast('命令已复制'); });
       await reload();
     } catch (error) { toast(error.message); doneBusy(); }
+    return;
+  }
+  const withdrawBtn = e.target.closest('[data-withdraw]');
+  if (withdrawBtn) {
+    const w = state.adminWorks.find((item) => item.id === withdrawBtn.dataset.withdraw);
+    if (!w || !await confirmDialog({ title: '撤回提名？', message: '现有导出命令会立即失效。', confirm: '撤回提名' })) return;
+    try { await api(`admin/works/${workKey(w)}/nominate`, { method: 'DELETE' }); toast('提名已撤回'); await reload(); }
+    catch (error) { toast(error.message); }
     return;
   }
   const note = e.target.closest('[data-task-note]');
