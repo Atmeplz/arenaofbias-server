@@ -13,6 +13,9 @@ import { MIGRATIONS } from '../server/db.mjs';
 
 let root, platform, server, smtp, base;
 const messages = [];
+let holdSmtpReply = false;
+let releaseSmtpReply;
+let smtpReplyHeld;
 const originalEnv = Object.fromEntries([
   'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_STARTTLS',
   'MAIL_CODE_TTL_MS', 'MAIL_COOLDOWN_MS', 'MAIL_IP_MAX', 'MAIL_EMAIL_MAX',
@@ -53,7 +56,10 @@ function openSmtp() {
             messages.push(mail);
             mail = '';
             data = false;
-            socket.write('250 stored\r\n');
+            if (holdSmtpReply) {
+              releaseSmtpReply = () => socket.write('250 stored\r\n');
+              smtpReplyHeld?.();
+            } else socket.write('250 stored\r\n');
           } else mail += line + '\r\n';
         } else if (line.startsWith('EHLO ')) socket.write('250-fake\r\n250 AUTH PLAIN\r\n');
         else if (line.startsWith('AUTH ')) socket.write('235 authenticated\r\n');
@@ -171,7 +177,22 @@ test('changing email preserves the account and rejects an already bound address'
 test('reset send is indistinguishable for unknown accounts; reset revokes every session', async () => {
   const second = await post('/api/auth/login', { username: 'alice', password: alicePassword });
   const unknown = await post('/api/auth/email/send', { purpose: 'reset', username: 'missing' });
-  const known = await post('/api/auth/email/send', { purpose: 'reset', username: 'alice' });
+  holdSmtpReply = true;
+  const held = new Promise((resolve) => { smtpReplyHeld = resolve; });
+  const knownRequest = post('/api/auth/email/send', { purpose: 'reset', username: 'alice' });
+  await held;
+  let known;
+  try {
+    known = await Promise.race([
+      knownRequest,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('reset response waited for SMTP')), 1000)),
+    ]);
+  } finally {
+    holdSmtpReply = false;
+    smtpReplyHeld = undefined;
+    releaseSmtpReply?.();
+    releaseSmtpReply = undefined;
+  }
   assert.deepEqual({ status: unknown.status, data: unknown.data }, { status: known.status, data: known.data });
   const code = codeFromLastMail();
   assert.equal((await post('/api/auth/email/verify', { purpose: 'reset', username: 'alice', code })).status, 200);

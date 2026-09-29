@@ -387,13 +387,4 @@ export function registerShow1Compat(router, deps) {
     withStatus(ctx.res, 204);
     return { ok: true };
   });
-
-  // ---- postponed features ------------------------------------------------------------
-
-  // NB: /share/*.png live outside /api/, so the site's static handler never reaches the
-  // router for them in production; they are registered here for completeness and tests.
-  for (const path of ['/api/share', '/share/card.png', '/share/og.png']) {
-    router.on('GET', path, () => fail(501, '分享卡暂未迁移'));
-  }
-  router.on('GET', '/api/share-work/:id', () => fail(501, '分享卡暂未迁移'));
 }

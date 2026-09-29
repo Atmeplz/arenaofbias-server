@@ -513,11 +513,10 @@ describe('show1 compat endpoints', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM page_views').get().n, 1, 'invalid payloads are dropped silently');
   }));
 
-  test('share stubs remain unavailable', () => withServer({}, async ({ base }) => {
+  test('retired share endpoints have no routes', () => withServer({}, async ({ base }) => {
     for (const path of ['/api/share', '/api/share-work/up-aaaa0001']) {
       const response = await call(base, 'GET', path);
-      assert.equal(response.status, 501, path);
-      assert.deepEqual(response.data, { error: '分享卡暂未迁移' });
+      assert.equal(response.status, 404, path);
     }
   }));
 });

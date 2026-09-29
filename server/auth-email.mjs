@@ -92,18 +92,20 @@ export function createEmailAuth(db, auth) {
         fail(503, '邮件服务未配置，暂时无法发送验证码。');
       }
       if (!email) return resetResponse;
+      if (purpose === 'reset') {
+        void issue(purpose, email).catch((error) => {
+          console.error('Reset email delivery failed:', error);
+        });
+        return resetResponse;
+      }
       try {
         await issue(purpose, email);
       } catch (error) {
-        if (purpose === 'reset') {
-          if (error.status !== 429) console.error('Reset email delivery failed:', error);
-          return resetResponse;
-        }
         if (error.status) throw error;
         console.error('Email delivery failed:', error);
         fail(503, '验证码邮件发送失败，请稍后重试。');
       }
-      return purpose === 'reset' ? resetResponse : { sent: true, email };
+      return { sent: true, email };
     },
     verify(body, user) {
       const purpose = body.purpose;
