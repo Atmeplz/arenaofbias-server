@@ -25,6 +25,8 @@ import { registerShow1Guess } from './show1/guess.mjs';
 export function createPlatform({ config, limits }) {
   const serverVersion = process.env.SERVER_VERSION || (() => {
     try { return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('..', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch { /* 部署目录没有 .git：读部署时写入的版本文件 */ }
+    try { return readFileSync(new URL('../.server-version', import.meta.url), 'utf8').trim(); }
     catch { return 'dev'; }
   })();
   const db = openDatabase(join(config.dataDir, 'platform.db'));

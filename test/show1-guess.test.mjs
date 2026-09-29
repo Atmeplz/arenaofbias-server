@@ -24,7 +24,7 @@ import {
 import { registerShow1Guess } from '../server/show1/guess.mjs';
 
 const GOLDEN = JSON.parse(
-  readFileSync(new URL('../../show1-adapter/golden/guess_today.json', import.meta.url), 'utf8'),
+  readFileSync(new URL('./fixtures/show1-golden/guess_today.json', import.meta.url), 'utf8'),
 );
 
 // ── 纯逻辑：judge() 逐属性 hit/near/miss/箭头 ──

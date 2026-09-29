@@ -600,7 +600,7 @@ describe('auth dual shape', () => {
 
 describe('real compat snapshot', () => {
   const snapshot = loadJson(new URL('../server/show1/compat-data.json', import.meta.url));
-  const golden = (name) => loadJson(new URL(`../../show1-adapter/golden/${name}`, import.meta.url));
+  const golden = (name) => loadJson(new URL(`./fixtures/show1-golden/${name}`, import.meta.url));
 
   test('structure and referential integrity hold', () => {
     assert.equal(snapshot.prompts.length, 8);
