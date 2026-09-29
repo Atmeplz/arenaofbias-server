@@ -62,6 +62,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     deleteDraft: db.prepare('DELETE FROM drafts WHERE id = ?'),
     work: db.prepare(`${WORK} WHERE works.id = ? AND works.deleted_at IS NULL`),
+    storedWork: db.prepare('SELECT id, cover FROM works WHERE id = ?'),
     workByKey: db.prepare(`${WORK} WHERE works.content_key = ? AND works.deleted_at IS NULL`),
     workByDigest: db.prepare('SELECT id, title, task_id FROM works WHERE digest = ? AND deleted_at IS NULL LIMIT 1'),
     works: db.prepare(`${WORK} WHERE works.deleted_at IS NULL ORDER BY works.created_at DESC`),
@@ -71,6 +72,10 @@ export function createLibrary({ db, catalog, config, limits }) {
     insertWork: db.prepare(`INSERT INTO works (id, task_id, owner_id, title, summary, model_id, model_name, vendor, effort, tool, note, content_key,
       source_name, root, entry, file_count, bytes, digest, checks, trial, cover, created_at, updated_at, show_gallery, show_arena)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)`),
+    deleteWork: db.prepare('DELETE FROM works WHERE id = ?'),
+    deleteSubmitAudit: db.prepare("DELETE FROM audit WHERE action = 'submit' AND work_id = ?"),
+    restoreDraft: db.prepare(`INSERT INTO drafts (id, owner_id, task_id, token, source_name, root, entry, file_count, bytes, digest, checks, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     review: db.prepare(`UPDATE works SET status = ?, status_reason = ?, model_id = ?, model_name = ?, vendor = ?, effort = ?,
       audience = ?, show_gallery = ?, show_arena = ?, title = ?, summary = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE id = ?`),
     remove: db.prepare('UPDATE works SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id = ?'),
@@ -85,8 +90,8 @@ export function createLibrary({ db, catalog, config, limits }) {
     setOverride: db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
       show_gallery = excluded.show_gallery, show_arena = excluded.show_arena, updated_by = excluded.updated_by, updated_at = excluded.updated_at`),
-    setCuratedCalibration: db.prepare(`INSERT INTO work_overrides (task_id, work_id, calibration_gallery, calibration_arena, updated_by, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
+    setCuratedCalibration: db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, calibration_gallery, calibration_arena, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, work_id) DO UPDATE SET
       calibration_gallery = excluded.calibration_gallery, calibration_arena = excluded.calibration_arena,
       updated_by = excluded.updated_by, updated_at = excluded.updated_at`),
     reaction: db.prepare('SELECT 1 FROM reactions WHERE task_id = ? AND work_id = ? AND user_id = ? AND emoji = ?'),
@@ -158,6 +163,24 @@ export function createLibrary({ db, catalog, config, limits }) {
   purgeDrafts();
   // Directories left behind by an interrupted upload.
   for (const name of readdirSync(dirs.drafts)) if (!q.draft.get(name)) rmSync(join(dirs.drafts, name), { recursive: true, force: true });
+  const orphans = join(config.dataDir, 'orphans');
+  for (const item of readdirSync(dirs.works, { withFileTypes: true })) {
+    if (!item.isDirectory()) continue;
+    const row = q.storedWork.get(item.name);
+    if (!row) {
+      mkdirSync(orphans, { recursive: true });
+      const target = join(orphans, `${item.name}-${Date.now()}-${randomBytes(4).toString('hex')}`);
+      renameSync(join(dirs.works, item.name), target);
+      console.warn(`Moved orphan work directory ${item.name} to ${target}`);
+    } else if (row.cover) {
+      const pending = join(dirs.media, item.name, `${row.cover}.tmp`);
+      const final = join(dirs.media, item.name, row.cover);
+      if (existsSync(pending) && !existsSync(final)) {
+        renameSync(pending, final);
+        console.warn(`Completed pending cover for ${item.name}`);
+      }
+    }
+  }
 
   const flagsOf = (work) => {
     if (!work) return { show_gallery: false, show_arena: false };
@@ -354,7 +377,9 @@ export function createLibrary({ db, catalog, config, limits }) {
       transaction(db, () => {
         if (work.curated) {
           const old = q.override.get(taskId, id);
+          const flags = flagsOf(work);
           q.setCuratedCalibration.run(taskId, id,
+            Number(flags.show_gallery), Number(flags.show_arena),
             face === 'gallery' ? (value ? JSON.stringify(value) : null) : old?.calibration_gallery ?? null,
             face === 'arena' ? (value ? JSON.stringify(value) : null) : old?.calibration_arena ?? null,
             admin.id, Date.now());
@@ -462,25 +487,40 @@ export function createLibrary({ db, catalog, config, limits }) {
       const now = Date.now();
       const staged = join(dirs.drafts, draft.id);
       const stored = join(dirs.works, id);
-      renameSync(staged, stored);
+      const coverName = cover ? `cover.${cover.type.ext}` : null;
+      const media = join(dirs.media, id);
+      const pendingCover = coverName ? join(media, `${coverName}.tmp`) : null;
+      if (cover) {
+        mkdirSync(media, { recursive: true });
+        try { writeFileSync(pendingCover, cover.buffer); }
+        catch (error) { rmSync(media, { recursive: true, force: true }); throw error; }
+      }
+      let moved = false;
+      let committed = false;
       try {
+        renameSync(staged, stored);
+        moved = true;
         transaction(db, () => {
           q.insertWork.run(id, draft.task_id, user.id, title, clip(body.summary, 200), who.modelId, who.modelName, who.vendor,
             effortOf(body.effort), tool, clip(body.note, 1000), token('w'), draft.source_name, draft.root, draft.entry, draft.file_count,
-            draft.bytes, draft.digest, draft.checks, JSON.stringify(sanitizeTrial(body.trial)), cover ? `cover.${cover.type.ext}` : null, now, now);
+            draft.bytes, draft.digest, draft.checks, JSON.stringify(sanitizeTrial(body.trial)), coverName, now, now);
           q.deleteDraft.run(draft.id);
+          q.audit.run(now, user.id, user.name, 'submit', draft.task_id, id, `${who.modelName}${effortOf(body.effort) ? ` · ${effortOf(body.effort)}` : ''}`);
         });
+        committed = true;
+        if (cover) renameSync(pendingCover, join(media, coverName));
       } catch (error) {
-        renameSync(stored, staged);
+        if (committed) transaction(db, () => {
+          q.deleteSubmitAudit.run(id);
+          q.deleteWork.run(id);
+          q.restoreDraft.run(draft.id, draft.owner_id, draft.task_id, draft.token, draft.source_name, draft.root,
+            draft.entry, draft.file_count, draft.bytes, draft.digest, draft.checks, draft.created_at, draft.expires_at);
+        });
+        if (moved) renameSync(stored, staged);
+        if (cover) rmSync(media, { recursive: true, force: true });
         throw error;
       }
-      if (cover) {
-        mkdirSync(join(dirs.media, id), { recursive: true });
-        writeFileSync(join(dirs.media, id, `cover.${cover.type.ext}`), cover.buffer);
-      }
-      const work = upload(draft.task_id, id);
-      audit(user, 'submit', work, `${work.modelName}${work.effort ? ` · ${work.effort}` : ''}`);
-      return work;
+      return upload(draft.task_id, id);
     },
 
     markCurated(admin, work, curatedId) {

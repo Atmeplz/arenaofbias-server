@@ -1,5 +1,6 @@
 // Platform rules: ranking, upload inspection and the upload → review → blind vote lifecycle.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { scryptSync } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
@@ -16,6 +17,26 @@ import { inspectUpload } from '../server/inspect.mjs';
 import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 import { createQuestions } from '../server/questions.mjs';
 import { fitBradleyTerry, rankEntries } from '../server/ranking.mjs';
+
+test('reserved admin names return the ordinary duplicate error and CLI creates an admin from stdin', () => {
+  const root = mkdtempSync(join(tmpdir(), 'reserved-admin-'));
+  const db = openDatabase(join(root, 'platform.db'));
+  try {
+    const auth = createAuth(db, { admins: ['reservedroot'], secureCookies: false, sessionTtl: 60_000 });
+    const duplicate = () => auth.register('taken', 'correct horse');
+    duplicate();
+    let expected;
+    try { duplicate(); } catch (error) { expected = error; }
+    assert.throws(() => auth.register('ReservedRoot', 'correct horse'),
+      (error) => error.status === 409 && error.message === expected.message);
+    const cli = spawnSync(process.execPath, ['server/cli.mjs', '--create', 'ReservedRoot'], {
+      cwd: new URL('..', import.meta.url), env: { ...process.env, DATA_DIR: root }, input: 'correct horse\n', encoding: 'utf8',
+    });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.doesNotMatch(cli.stdout, /correct horse/);
+    assert.equal(auth.login('reservedroot', 'correct horse').role, 'admin');
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
 
 function zip(entries) {
   const locals = [];
@@ -277,7 +298,9 @@ describe('platform lifecycle', () => {
     await Promise.all([site, content].map((server) => new Promise((resolve) => server.once('listening', resolve))));
     base = `http://127.0.0.1:${site.address().port}`;
     config.contentTemplate = `http://{token}.localhost:${content.address().port}`;
-    for (const name of ['alice', 'bob', 'root']) assert.equal((await call(name, 'POST', '/api/auth/register', { name, password: 'correct horse' })).status, 200);
+    for (const name of ['alice', 'bob']) assert.equal((await call(name, 'POST', '/api/auth/register', { name, password: 'correct horse' })).status, 200);
+    platform.auth.createAdmin('root', 'correct horse');
+    assert.equal((await call('root', 'POST', '/api/auth/login', { name: 'root', password: 'correct horse' })).status, 200);
   });
 
   after(async () => {

@@ -38,7 +38,7 @@
 - Cookie 名为 `sp_session`，HttpOnly，前端脚本不可读；服务端只存其 SHA-256。
 - 前端请求需携带 Cookie（`fetch` 使用 `credentials: 'include'`，XHR 使用 `withCredentials = true`）。`COOKIE_SAME_SITE` 支持 `Lax`（默认）、`Strict`、`None`；跨站 HTTPS 部署设 `None` 并开启 `COOKIE_SECURE=1`，否则服务拒绝启动。第三方 Cookie 仍受浏览器设置限制，建议前端与 API 使用同站域名。
 - 登出（`POST /api/auth/logout`）删除服务端会话并下发 `Max-Age=0` 的清空 Cookie。
-- 角色：`member`（默认）与 `admin`。用户名被列入服务端 `ADMIN_USERNAMES` 环境变量的账号在注册 / 登录时自动持有 `admin` 角色；运营亦可经 `npm run admin -- <用户名>` 提升。
+- 角色：`member`（默认）与 `admin`。管理员账号只能经 CLI 新建（`npm run admin -- --create <用户名>`，密码从标准输入读取、不回显），或将已有普通账号提权（`npm run admin -- <用户名>` 或管理员角色接口）。公开注册拒绝 `ADMIN_USERNAMES` 中的保留用户名；已有账号登录时仍按该配置同步管理员角色。
 
 ### 1.4 通用错误格式
 
@@ -53,6 +53,7 @@
 - HTTP 状态码全集：`400`（参数无效）、`401`（未登录 / 凭证错误）、`403`（无权限 / 来源无效）、`404`（不存在）、`405`（方法不允许）、`409`（状态冲突）、`413`（体积超限）、`415`（Content-Type 非 JSON）、`429`（限流 / 待审超限）、`500`（服务端错误，固定文案「服务器出错了，请稍后再试」）。
 - 非 GET/HEAD 的 `/api/*` 请求必须带有可信 `Origin`：请求自身的完整 origin 或 `SITE_ORIGINS` 白名单中的完整 origin（精确协议、主机与端口），否则 `403 请求来源无效`。同源判断只在 `TRUST_PROXY=1` 时使用代理传入的 HTTPS 协议。
 - JSON 请求体默认上限 64 KB；`POST /api/works` 单独放宽至 6 MB（封面以 data URL 内嵌所致）。
+- JSON 请求体必须是对象；合法的 `null`、数组或其它标量返回 `400`。
 
 ### 1.5 跨域约定（CORS）
 
@@ -72,6 +73,7 @@
 | write | 120 次 / 分钟 | 用户 ID（未登录时为 IP） | 投稿提交、投票、表情、评论写入/删除、校准写回 |
 | drafts | 12 次 / 10 分钟 | 用户 ID | 上传草稿 |
 | matches | 60 次 / 分钟 | 用户 ID（未登录时为 IP） | 创建对战 |
+| export | 2000 次 / 分钟 | 导出令牌 | 导出元数据及文件；另有每 IP 10000 次 / 分钟兜底 |
 
 `TRUST_PROXY=1` 时 IP 取 `X-Forwarded-For` 首段。限流为单机内存计数，进程重启即清零，多实例部署不共享。
 
@@ -254,7 +256,7 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 
 Show1 兼容字段额外包含 `username` 和 `email`（未绑定为 `null`）。`GET /api/auth/me` 的 `user` 返回 `{ id, username, role, email }`，绑定后为真实归一化邮箱。
 
-错误：`400` 用户名 / 密码不合规或人机验证失败；`409` 用户名已被使用；`415`；`429`；人机验证服务不可用时 `503`。
+错误：`400` 用户名 / 密码不合规或人机验证失败；`409` 用户名已被使用或属于 `ADMIN_USERNAMES` 保留名（同一错误文案，不区分原因）；`415`；`429`；人机验证服务不可用时 `503`。
 
 ### 3.3 `POST /api/auth/login` —— 登录
 
@@ -631,7 +633,7 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 - **`POST /api/admin/works/:task/:id/meta`** 仅编辑 SQLite 投稿，不编辑馆藏。JSON 请求可含 `title`、`summary`、`modelName`、`modelId`、`effort` 的任意非空组合；标题不能为空，`modelId` 须存在于目录。成功 `200`：`{ "work": <管理员作品视图> }`，写 `meta` audit；无效字段或内容返回 `400`，投稿不存在或目标为馆藏返回 `404 not_found`。
 - **`POST /api/admin/works/:task/:id/nominate`** 仅对已核验、尚未收录、且题目在当前数据包内的投稿有效。生成有效期 14 天的随机导出令牌；重复提名会换发令牌，数据库仅存 SHA-256。返回 `{ "exportUrl": "<当前来源>/api/curate/export/<令牌>", "command": "npm run intake:from-server -- <exportUrl>" }`。提名不改变作品的公开展示状态。管理员列表以 `nominatedAt` 标记提名，以 `curatedAs` 标记已收录。
 - **`DELETE /api/admin/works/:task/:id/nominate`** 撤回提名并使令牌立即失效，返回 `{ "ok": true }`；已收录返回 `409`。提名和撤回均写审计记录。
-- **`GET /api/curate/export/:token`** 无需登录，返回 `task`、`id`、`title`、`summary`、`modelId`、`modelName`、`vendor`、`effort`、`tool`、`note`、`createdAt`、`root`、`entry`、`digest` 及 `files: [{ path, size, sha256 }]`。**`GET /api/curate/export/:token/file?path=<相对路径>`** 返回原始文件。两者每 IP 每分钟限流 120 次；无效、过期、撤回或已被数据包接管的令牌返回 `404`，非法文件路径返回 `404`。
+- **`GET /api/curate/export/:token`** 无需登录，返回 `task`、`id`、`title`、`summary`、`modelId`、`modelName`、`vendor`、`effort`、`tool`、`note`、`createdAt`、`root`、`entry`、`digest` 及 `files: [{ path, size, sha256 }]`。**`GET /api/curate/export/:token/file?path=<相对路径>`** 返回原始文件。两者按令牌每分钟限流 2000 次，另有每 IP 每分钟 10000 次兜底；命中返回 `429` 和 `Retry-After`。无效、过期、撤回或已被数据包接管的令牌返回 `404`，非法文件路径返回 `404`。
 - 数据包中某馆藏结果带 `sourceUpload: "up-…"` 时，后端在数据包版本变化后异步设置对应投稿的 `curated_as`、清除提名字段、继承投稿的展览馆与竞技场开关（已有馆藏 override 不覆盖），并以系统身份写审计；成功接管的版本不重复更新，失败会记录并在下次刷新时重试。
 
 ### 3.20 Show1 猜模型接口

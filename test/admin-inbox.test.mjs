@@ -46,7 +46,9 @@ describe('admin inbox', () => {
     site = createServer(platform.handleSite).listen(0, '127.0.0.1');
     await new Promise((resolve) => site.once('listening', resolve));
     base = `http://127.0.0.1:${site.address().port}`;
-    for (const name of ['root', 'alice']) assert.equal((await call(name, 'POST', '/api/auth/register', { name, password: 'correct horse' })).status, 200);
+    platform.auth.createAdmin('root', 'correct horse');
+    assert.equal((await call('root', 'POST', '/api/auth/login', { name: 'root', password: 'correct horse' })).status, 200);
+    assert.equal((await call('alice', 'POST', '/api/auth/register', { name: 'alice', password: 'correct horse' })).status, 200);
   });
 
   after(async () => {
@@ -81,6 +83,8 @@ describe('admin inbox', () => {
     const preview = await fetch(base + entry.preview, { headers: { cookie: jars.get('root') } });
     assert.equal(preview.status, 200);
     assert.match(preview.headers.get('content-type') ?? '', /text\/html/, 'the staged upload renders instead of downloading');
+    assert.equal(preview.headers.get('content-security-policy'), 'sandbox allow-scripts');
+    assert.equal(preview.headers.get('x-content-type-options'), 'nosniff');
     assert.match(await preview.text(), /canvas/);
     const outsider = await fetch(base + entry.preview, { headers: { cookie: jars.get('alice') } });
     assert.equal(outsider.status, 404);

@@ -6,7 +6,7 @@ import { transaction } from './db.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
-export function createCurator({ db, catalog, library }) {
+export function createCurator({ db, catalog, library, onTakeover = () => {} }) {
   const nominateRow = db.prepare('UPDATE works SET nominated_at = ?, nominated_by = ?, export_token_hash = ?, export_expires_at = ? WHERE id = ?');
   const clearRow = db.prepare('UPDATE works SET nominated_at = NULL, nominated_by = NULL, export_token_hash = NULL, export_expires_at = NULL WHERE id = ?');
   const byToken = db.prepare('SELECT task_id, id FROM works WHERE export_token_hash = ? AND export_expires_at > ? AND curated_as IS NULL AND deleted_at IS NULL');
@@ -91,6 +91,7 @@ export function createCurator({ db, catalog, library }) {
   }
 
   function takeover(snapshot) {
+    let changedAny = false;
     transaction(db, () => {
       for (const task of snapshot.tasks()) for (const work of task.works.values()) {
         if (!/^up-[a-z0-9]+$/.test(work.sourceUpload ?? '')) continue;
@@ -99,11 +100,13 @@ export function createCurator({ db, catalog, library }) {
         if (!flags) continue;
         const changed = takeoverRow.run(target, work.sourceUpload, task.id);
         if (changed.changes) {
+          changedAny = true;
           inheritFlags.run(task.id, work.id, flags.show_gallery, flags.show_arena, Date.now());
           audit.run(Date.now(), null, '系统', 'curate', task.id, work.sourceUpload, `数据包接管 ${target}`);
         }
       }
     });
+    if (changedAny) onTakeover();
   }
 
   return { nominate, withdraw, metadata, file, takeover };

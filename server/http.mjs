@@ -2,6 +2,7 @@
 // cookies, a pattern router, rate limits and safe static file responses.
 import { createReadStream, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 
 export class HttpError extends Error {
   constructor(status, message, code = '') {
@@ -40,7 +41,9 @@ export async function readBody(req, limit) {
 export async function readJson(req, limit = 64 * 1024) {
   if (!String(req.headers['content-type'] ?? '').includes('application/json')) fail(415, '请求格式无效');
   try {
-    return JSON.parse((await readBody(req, limit)).toString('utf8') || '{}');
+    const body = JSON.parse((await readBody(req, limit)).toString('utf8') || '{}');
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.getPrototypeOf(body) !== Object.prototype) fail(400, '请求内容必须是对象');
+    return body;
   } catch (error) {
     if (error instanceof HttpError) throw error;
     fail(400, '请求内容无法解析');
@@ -115,7 +118,11 @@ export function rateLimit(windowMs, max, message = '操作太频繁，请稍后�
       hits.set(key, bucket);
       if (hits.size > 10000) for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
     }
-    if (++bucket.count > max) fail(429, message);
+    if (++bucket.count > max) {
+      const error = new HttpError(429, message);
+      error.retryAfter = Math.ceil((bucket.reset - now) / 1000);
+      throw error;
+    }
   };
 }
 
@@ -154,15 +161,26 @@ export function resolveInside(base, urlPath) {
   }
 }
 
-export function streamFile(req, res, found, headers = {}) {
-  res.writeHead(200, {
+export async function streamFile(req, res, found, headers = {}) {
+  const responseHeaders = {
     'Content-Type': MIME[extname(found.file).toLowerCase()] ?? 'application/octet-stream',
     'Content-Length': found.size,
     'X-Content-Type-Options': 'nosniff',
     ...headers,
-  });
-  if (req.method === 'HEAD') return res.end();
-  createReadStream(found.file).pipe(res);
+  };
+  try {
+    const stream = createReadStream(found.file);
+    await new Promise((resolve, reject) => {
+      stream.once('open', resolve);
+      stream.once('error', reject);
+    });
+    res.writeHead(200, responseHeaders);
+    if (req.method === 'HEAD') { stream.destroy(); return res.end(); }
+    await pipeline(stream, res);
+  } catch (error) {
+    if (!res.headersSent) return sendJson(res, 404, { error: '文件不存在' });
+    res.destroy(error);
+  }
 }
 
 export function formatBytes(bytes) {

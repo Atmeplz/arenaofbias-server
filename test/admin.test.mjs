@@ -70,7 +70,7 @@ async function withPlatform(run) {
     return { status: response.status, data: await response.json() };
   }
   try {
-    platform.auth.register('root', 'correct horse');
+    platform.auth.createAdmin('root', 'correct horse');
     platform.auth.register('voter', 'correct horse');
     assert.equal((await call('root', 'POST', '/api/auth/login', { name: 'root', password: 'correct horse' })).status, 200);
     assert.equal((await call('voter', 'POST', '/api/auth/login', { name: 'voter', password: 'correct horse' })).status, 200);
@@ -112,6 +112,17 @@ test('admin API merges curated and upload works, applies face settings, calibrat
   assert.deepEqual(rows.find((w) => w.id === 'a').calibration_arena.framing, framing);
   assert.equal((await call('root', 'POST', `/api/admin/works/one/${id}/calibration`, { face: 'arena', calibration: { framing: { ...framing, zoom: 5 } } })).status, 400);
   assert.ok(platform.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('submit','verified','face-settings','calibration')").get().n >= 6);
+}));
+
+test('calibrating a curated work preserves its arena approval and invalidates the board', async () => withPlatform(async ({ platform, call }) => {
+  let invalidations = 0;
+  const invalidate = platform.arena.invalidate;
+  platform.arena.invalidate = () => { invalidations++; invalidate(); };
+  const framing = { width: 1440, height: 900, zoom: 1, offsetX: 0, offsetY: 0 };
+  assert.equal((await call('root', 'POST', '/api/admin/works/one/a/calibration', { face: 'gallery', calibration: { framing } })).status, 200);
+  assert.deepEqual({ ...platform.db.prepare('SELECT show_gallery, show_arena FROM work_overrides WHERE work_id = ?').get('a') },
+    { show_gallery: 1, show_arena: 0 });
+  assert.equal(invalidations, 1);
 }));
 
 test('admin batch face settings update curated and uploaded works atomically with one audit per work', async () => withPlatform(async ({ platform, call }) => {
