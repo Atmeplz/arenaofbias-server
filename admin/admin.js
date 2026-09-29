@@ -265,7 +265,7 @@ function thumb(w) {
 function workRow(w) {
   const face = state.system;
   const quick = w.status === 'questioned' ? '' : faceOn(w, face)
-    ? `<button class="btn sm" data-withdraw="${esc(w.id)}" title="本面撤下，不影响另一面">${icon('close')}撤下</button>`
+    ? `<button class="btn sm" data-face-off="${esc(w.id)}" title="本面撤下，不影响另一面">${icon('close')}撤下</button>`
     : `<button class="btn sm primary" data-verify="${esc(w.id)}" title="${w.source === 'curated' ? '让这件馆藏作品' : '内容核验通过并'}${face === 'gallery' ? '上展览馆' : '进入正式盲测'}">${icon('check')}${face === 'gallery' ? '上展览馆' : '进盲测'}</button>`;
   const meta = [taskTitle(w.task), w.source === 'curated' ? '精选馆藏' : esc(w.tool), formatDate(w.addedAt), w.owner ? `投稿者 ${esc(w.owner)}` : ''].filter(Boolean).join(' · ');
   return `<article class="work-row" data-status="${esc(w.status)}">
@@ -1183,11 +1183,12 @@ document.addEventListener('click', async (e) => {
     }
     return;
   }
-  const withdrawBtn = e.target.closest('[data-withdraw]');
-  if (withdrawBtn) {
-    const work = state.works?.find((w) => w.id === withdrawBtn.dataset.withdraw);
+  // 本面撤下（审核队列的行）；作品表里的「撤回提名」用的是 data-withdraw，两者不要混。
+  const faceOffBtn = e.target.closest('[data-face-off]');
+  if (faceOffBtn) {
+    const work = state.works?.find((w) => w.id === faceOffBtn.dataset.faceOff);
     if (!work) return;
-    const doneBusy = busy(withdrawBtn, '正在撤下…');
+    const doneBusy = busy(faceOffBtn, '正在撤下…');
     try {
       if (work.source === 'curated') {
         await api(`admin/works/${workKey(work)}/face-settings`, { method: 'POST', body: { [`show_${state.system}`]: false } });
