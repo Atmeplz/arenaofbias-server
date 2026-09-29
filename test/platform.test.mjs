@@ -12,29 +12,30 @@ import { after, before, describe, test } from 'node:test';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { createPlatform } from '../server/app.mjs';
 import { createAuth } from '../server/auth.mjs';
+import { createArena } from '../server/arena.mjs';
 import { limits as defaultLimits } from '../server/config.mjs';
 import { inspectUpload } from '../server/inspect.mjs';
 import { MIGRATIONS, openDatabase } from '../server/db.mjs';
 import { createQuestions } from '../server/questions.mjs';
 import { fitBradleyTerry, rankEntries } from '../server/ranking.mjs';
 
-test('reserved admin names return the ordinary duplicate error and CLI creates an admin from stdin', () => {
+test('reserved admin names return the ordinary duplicate error and CLI creates an admin from stdin', async () => {
   const root = mkdtempSync(join(tmpdir(), 'reserved-admin-'));
   const db = openDatabase(join(root, 'platform.db'));
   try {
     const auth = createAuth(db, { admins: ['reservedroot'], secureCookies: false, sessionTtl: 60_000 });
     const duplicate = () => auth.register('taken', 'correct horse');
-    duplicate();
+    await duplicate();
     let expected;
-    try { duplicate(); } catch (error) { expected = error; }
-    assert.throws(() => auth.register('ReservedRoot', 'correct horse'),
+    try { await duplicate(); } catch (error) { expected = error; }
+    await assert.rejects(() => auth.register('ReservedRoot', 'correct horse'),
       (error) => error.status === 409 && error.message === expected.message);
     const cli = spawnSync(process.execPath, ['server/cli.mjs', '--create', 'ReservedRoot'], {
       cwd: new URL('..', import.meta.url), env: { ...process.env, DATA_DIR: root }, input: 'correct horse\n', encoding: 'utf8',
     });
     assert.equal(cli.status, 0, cli.stderr);
     assert.doesNotMatch(cli.stdout, /correct horse/);
-    assert.equal(auth.login('reservedroot', 'correct horse').role, 'admin');
+    assert.equal((await auth.login('reservedroot', 'correct horse')).role, 'admin');
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -84,26 +85,76 @@ function zip(entries) {
 const PAGE = '<!doctype html><html><head><title>t</title></head><body><canvas></canvas><script src="app.js"></script></body></html>';
 const inspect = (buffer, name = 'work.zip') => inspectUpload(buffer, name, { limits: defaultLimits, cdn: ['unpkg.com'] });
 
-test('cross-site sessions use the configured cookie policy and require HTTPS', () => {
+test('cross-site sessions use the configured cookie policy and require HTTPS', async () => {
   const db = openDatabase(':memory:');
   try {
     assert.throws(() => createAuth(db, { admins: [], secureCookies: false, cookieSameSite: 'None', sessionTtl: 60000 }), /requires COOKIE_SECURE/);
     const auth = createAuth(db, { admins: [], secureCookies: true, cookieSameSite: 'None', sessionTtl: 60000 });
-    const user = auth.register('cookie-user', 'correct horse');
+    const user = await auth.register('cookie-user', 'correct horse');
     const headers = new Map();
     const res = { setHeader: (name, value) => headers.set(name, value) };
     auth.startSession(res, user.id);
     const cookie = headers.get('Set-Cookie');
-    assert.match(cookie, /HttpOnly; SameSite=None; Max-Age=60; Secure$/);
+    assert.match(cookie, /^__Host-sp_session=.*; Path=\/; HttpOnly; SameSite=None; Max-Age=60; Secure$/);
     const req = { headers: { cookie: cookie.split(';')[0] } };
     assert.equal(auth.userFrom(req).id, user.id);
+    assert.equal(auth.userFrom({ headers: { cookie: `${req.headers.cookie}; ${req.headers.cookie}` } }), null);
+    assert.equal(auth.userFrom({ headers: { cookie: `sp_session=${req.headers.cookie.split('=')[1]}` } }), null);
     auth.endSession(req, res);
     assert.match(headers.get('Set-Cookie'), /SameSite=None; Max-Age=0; Secure$/);
     assert.equal(auth.userFrom(req), null);
   } finally { db.close(); }
 });
 
-test('v6 migrates legacy password hashes on first successful login', () => {
+test('local sessions retain sp_session and reject duplicate cookie values', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
+    const user = await auth.register('local-user', 'correct horse');
+    let cookie;
+    auth.startSession({ setHeader: (_name, value) => { cookie = value; } }, user.id);
+    assert.match(cookie, /^sp_session=.*; Path=\/; HttpOnly;/);
+    const pair = cookie.split(';')[0];
+    assert.equal(auth.userFrom({ headers: { cookie: pair } }).id, user.id);
+    assert.equal(auth.userFrom({ headers: { cookie: `${pair}; ${pair}` } }), null);
+  } finally { db.close(); }
+});
+
+test('login and registration let the event loop run during scrypt', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
+    let ticked = false;
+    setTimeout(() => { ticked = true; }, 0);
+    await auth.register('async-user', 'correct horse');
+    assert.equal(ticked, true);
+    ticked = false;
+    setTimeout(() => { ticked = true; }, 0);
+    await auth.login('async-user', 'correct horse');
+    assert.equal(ticked, true);
+  } finally { db.close(); }
+});
+
+test('match sampling chooses a configuration pair before a work pair', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const work = (id, modelId) => ({ id, taskId: 'one', curated: false, digest: id,
+      title: id, modelId, modelName: modelId, vendor: '', effort: '' });
+    const pool = [...Array.from({ length: 50 }, (_, i) => work(`a${i}`, 'a')), work('b', 'b'), work('c', 'c')];
+    const snapshot = { version: 'test', root: '', task: () => ({}), entryDigest: () => null };
+    const arena = createArena({ db, catalog: { snapshot: () => snapshot, task: () => ({}), tasks: () => [] },
+      library: { eligible: () => pool, isEligible: () => true, originOf: (key) => `https://${key}.example` },
+      limits: defaultLimits, random: () => 0.9 });
+    const firstBoard = arena.leaderboard({ task: 'one', snapshot });
+    assert.strictEqual(arena.leaderboard({ task: 'one', snapshot }), firstBoard, 'same cache key shares one pending Promise');
+    await firstBoard;
+    const match = await arena.createMatch(null, 'one', null, snapshot);
+    const selected = db.prepare('SELECT a_work, b_work FROM matches WHERE id = ?').get(match.id);
+    assert.deepEqual([selected.a_work, selected.b_work].sort(), ['b', 'c']);
+  } finally { db.close(); }
+});
+
+test('v6 migrates legacy password hashes on first successful login', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-auth-'));
   const file = join(root, 'platform.db');
   const legacy = new DatabaseSync(file);
@@ -126,22 +177,22 @@ test('v6 migrates legacy password hashes on first successful login', () => {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'comments'").get());
     const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
     db.prepare('UPDATE users SET hash_params = ? WHERE id = ?').run(JSON.stringify({ N: 32768, r: 8, p: 1, keylen: 64 }), 'legacy-user');
-    assert.throws(() => auth.login('olduser', 'wrong password'), /用户名或密码不正确/);
+    await assert.rejects(() => auth.login('olduser', 'wrong password'), /用户名或密码不正确/);
     assert.equal(db.prepare('SELECT hash_params FROM users WHERE id = ?').get('legacy-user').hash_params !== null, true);
-    assert.equal(auth.login('olduser', 'correct horse').id, 'legacy-user');
+    assert.equal((await auth.login('olduser', 'correct horse')).id, 'legacy-user');
     const upgraded = db.prepare('SELECT salt, hash, hash_params FROM users WHERE id = ?').get('legacy-user');
     assert.equal(upgraded.hash_params, null);
     assert.notEqual(upgraded.salt, salt);
     assert.equal(upgraded.hash.length, 64);
-    assert.equal(auth.login('olduser', 'correct horse').id, 'legacy-user');
-    const standard = auth.register('newuser', 'correct horse');
+    assert.equal((await auth.login('olduser', 'correct horse')).id, 'legacy-user');
+    const standard = await auth.register('newuser', 'correct horse');
     const before = db.prepare('SELECT salt, hash FROM users WHERE id = ?').get(standard.id);
-    auth.login('newuser', 'correct horse');
+    await auth.login('newuser', 'correct horse');
     assert.deepEqual(db.prepare('SELECT salt, hash FROM users WHERE id = ?').get(standard.id), before);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test('malformed legacy hash_params are treated as a wrong password, never a 500', () => {
+test('malformed legacy hash_params are treated as a wrong password, never a 500', async () => {
   const root = mkdtempSync(join(tmpdir(), 'legacy-auth-'));
   const file = join(root, 'platform.db');
   const setup = new DatabaseSync(file);
@@ -157,12 +208,12 @@ test('malformed legacy hash_params are treated as a wrong password, never a 500'
   const db = openDatabase(file);
   try {
     const auth = createAuth(db, { admins: [], secureCookies: false, sessionTtl: 60000 });
-    auth.register('brokenjson', 'correct horse');
+    await auth.register('brokenjson', 'correct horse');
     db.prepare("UPDATE users SET hash_params = 'not json' WHERE name_key = 'brokenjson'").run();
-    auth.register('badparams', 'correct horse');
+    await auth.register('badparams', 'correct horse');
     db.prepare("UPDATE users SET hash_params = '{\"N\":\"x\"}' WHERE name_key = 'badparams'").run();
     for (const name of ['brokenjson', 'badparams']) {
-      assert.throws(() => auth.login(name, 'correct horse'), (error) => error.status === 401 && /用户名或密码不正确/.test(error.message));
+      await assert.rejects(() => auth.login(name, 'correct horse'), (error) => error.status === 401 && /用户名或密码不正确/.test(error.message));
     }
     // The row is left untouched so a fixed hash_params can still be migrated later.
     assert.equal(db.prepare("SELECT hash_params FROM users WHERE name_key = 'brokenjson'").get().hash_params, 'not json');

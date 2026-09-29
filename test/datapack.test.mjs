@@ -61,11 +61,11 @@ test('a match keeps its original package and vote identity across a same-mtime s
     platform = createPlatform({ config, limits });
     content = createServer(platform.handleContent).listen(0, '127.0.0.1');
     await new Promise((resolve) => content.once('listening', resolve));
-    const user = platform.auth.register('voter', 'correct horse');
+    const user = await platform.auth.register('voter', 'correct horse');
     // 精选馆藏默认不进正式盲测池：先审批 a1/b1（等价于竞技场面的逐件通过）。
     platform.db.prepare("INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at) VALUES ('one', 'a1', 1, 1, 'test', 0), ('one', 'b1', 1, 1, 'test', 0)").run();
-    assert.equal(platform.arena.leaderboard().unranked.some((row) => row.key === 'm-a|'), true);
-    const match = platform.arena.createMatch(user, 'one');
+    assert.equal((await platform.arena.leaderboard()).unranked.some((row) => row.key === 'm-a|'), true);
+    const match = await platform.arena.createMatch(user, 'one');
     const original = await contentGet(match.a);
     assert.equal(original.status, 200);
     assert.match(original.body, /a-(a1|b1)/);
@@ -76,8 +76,8 @@ test('a match keeps its original package and vote identity across a same-mtime s
 
     unlinkSync(current);
     symlinkSync(b, current, 'junction');
-    assert.equal(platform.arena.leaderboard().unranked.some((entry) => entry.key === 'm-new|'), true);
-    assert.equal(platform.arena.leaderboard().unranked.some((entry) => entry.key === 'm-a|'), false);
+    assert.equal((await platform.arena.leaderboard()).unranked.some((entry) => entry.key === 'm-new|'), true);
+    assert.equal((await platform.arena.leaderboard()).unranked.some((entry) => entry.key === 'm-a|'), false);
     assert.equal((await contentGet(match.a)).body, original.body);
     assert.match((await contentGet(new URL('/app.js', match.a))).body, /'a'/);
     await new Promise((resolve) => content.close(resolve));
@@ -94,7 +94,7 @@ test('a match keeps its original package and vote identity across a same-mtime s
     const identities = [JSON.parse(vote.a_identity), JSON.parse(vote.b_identity)];
     assert.equal(identities.find((side) => side.id === 'a1').configKey, 'm-a|');
     assert.ok(identities.every((side) => /^[0-9a-f]{64}$/.test(side.digest)));
-    const board = platform.arena.leaderboard({ task: 'one' });
+    const board = (await platform.arena.leaderboard({ task: 'one' }));
     assert.ok(board.rows.some((entry) => entry.key === 'm-a|' && entry.modelName === 'Model a'));
     assert.ok(!board.rows.some((entry) => entry.key === 'm-new|'));
 
@@ -131,7 +131,7 @@ test('a match keeps its original package and vote identity across a same-mtime s
     assert.equal(JSON.parse(correctedRow.a_correction).modelKey, 'fixed');
     const audit = platform.db.prepare("SELECT detail FROM audit WHERE action = 'vote-identity-correction'").get();
     assert.equal(JSON.parse(audit.detail).reason, 'source record corrected');
-    assert.ok(platform.arena.leaderboard({ task: 'one' }).rows.some((entry) => entry.key === 'fixed|'));
+    assert.ok((await platform.arena.leaderboard({ task: 'one' })).rows.some((entry) => entry.key === 'fixed|'));
   } finally {
     if (content?.listening) await new Promise((resolve) => content.close(resolve));
     if (platform) await platform.close();
