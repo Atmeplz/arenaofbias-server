@@ -9,10 +9,12 @@ cd "$REPO"
 git fetch -q origin datapack
 HEAD="$(git rev-parse origin/datapack)"
 PIN="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$ROOT/datapack.json', 'utf8')).commit)")"
-if [ "$HEAD" = "$PIN" ]; then exit 0; fi
+CURRENT="${DIST_DIR:-$ROOT/.datapack/current}"
+ACTIVE="$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).commit || "") } catch { console.log("") }' "$CURRENT/.datapack-source.json")"
+if [ "$HEAD" = "$PIN" ] && [ "$ACTIVE" = "$HEAD" ]; then exit 0; fi
 
-node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('$ROOT/datapack.json', 'utf8')); p.commit = '$HEAD'; fs.writeFileSync('$ROOT/datapack.json', JSON.stringify(p, null, 2) + '\n');"
 cd "$ROOT"
-npm run --silent fetch:datapack
-npm run --silent activate:datapack
+DATAPACK_COMMIT="$HEAD" npm run --silent fetch:datapack
+DATAPACK_COMMIT="$HEAD" npm run --silent activate:datapack
+node -e 'const fs = require("fs"); const file = "datapack.json"; const tmp = `${file}.tmp-${process.pid}`; const p = JSON.parse(fs.readFileSync(file, "utf8")); p.commit = process.argv[1]; try { fs.writeFileSync(tmp, JSON.stringify(p, null, 2) + "\n"); fs.renameSync(tmp, file); } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }' "$HEAD"
 echo "$(date -u '+%F %T') activated $HEAD"

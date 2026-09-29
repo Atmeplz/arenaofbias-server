@@ -497,6 +497,7 @@ export function createPlatform({ config, limits }) {
     handleSite,
     handleContent: createContentHandler({ config, library, arena, siteOrigins: config.siteOrigins }),
     async close() {
+      await emailAuth.drain();
       await capturer.close();
       db.close();
     },

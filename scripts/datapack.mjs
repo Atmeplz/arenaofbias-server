@@ -1,12 +1,14 @@
 // Install immutable releases, switch the current symlink, or inspect expiry-based cleanup.
-import { existsSync, readFileSync, readdirSync, realpathSync, lstatSync, mkdirSync, symlinkSync, renameSync, rmSync, rmdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { fetchDatapack, readSource, validatePackage } from './datapack-client.mjs';
+import { switchCurrent } from './datapack-switch.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pin = JSON.parse(readFileSync(join(root, 'datapack.json'), 'utf8'));
+if (process.env.DATAPACK_COMMIT) pin.commit = process.env.DATAPACK_COMMIT;
 const versions = resolve(process.env.DATAPACK_VERSIONS_DIR || join(root, '.datapack/versions'));
 const current = resolve(process.env.DIST_DIR || join(root, '.datapack/current'));
 const args = process.argv.slice(2), command = args[0] || 'fetch';
@@ -23,19 +25,7 @@ if (command === 'fetch') {
   }
   mkdirSync(dirname(current), { recursive: true });
   if (existsSync(current) && !lstatSync(current).isSymbolicLink()) throw new Error('DIST_DIR must be a symlink; existing directories are never replaced');
-  const pending = `${current}.next-${process.pid}`;
-  symlinkSync(target, pending, process.platform === 'win32' ? 'junction' : 'dir');
-  // Windows 上 rename 无法覆盖既有 junction，且 rmSync 会把 junction 当目录报 EISDIR；
-  // junction 要用 rmdir 摘除（只删链接、不动目标）。代价：Windows 上切换非原子。
-  const unlinkLink = (path) => (process.platform === 'win32' ? rmdirSync(path) : rmSync(path));
-  try {
-    if (process.platform === 'win32' && existsSync(current)) rmdirSync(current);
-    renameSync(pending, current);
-  }
-  catch (error) {
-    unlinkLink(pending);
-    throw new Error(`Cannot atomically switch DIST_DIR on this filesystem; current release was kept. Use a supported symlink deployment or stop the service before a manual switch. ${error.message}`);
-  }
+  switchCurrent(current, target);
   console.log(`Current release: ${pin.commit}`);
 } else if (command === 'prune') {
   const grace = Number(process.env.DATAPACK_CLEANUP_GRACE_MS || 3600000);
