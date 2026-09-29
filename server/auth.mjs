@@ -1,7 +1,7 @@
 // Accounts and sessions. Passwords use scrypt; the session token lives only in an
 // HttpOnly cookie and the database keeps its SHA-256.
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { fail, HttpError, parseCookies } from './http.mjs';
+import { createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { fail, HttpError, uniqueCookie } from './http.mjs';
 
 const COOKIE = 'sp_session';
 const SCRYPT = { N: 16384, r: 8, p: 1 };
@@ -30,7 +30,11 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
     purgeSessions: db.prepare('DELETE FROM sessions WHERE expires_at <= ?'),
   };
-  const hashPassword = (password, salt) => scryptSync(password, salt, 32, SCRYPT).toString('hex');
+  const cookieName = secureCookies ? '__Host-sp_session' : COOKIE;
+  const derive = (password, salt, length, options) => new Promise((resolve, reject) =>
+    scrypt(password, salt, length, options, (error, key) => error ? reject(error) : resolve(key)));
+  const hashPassword = async (password, salt) => (await derive(password, salt, 32, SCRYPT)).toString('hex');
+  const hashPasswordSync = (password, salt) => scryptSync(password, salt, 32, SCRYPT).toString('hex');
   const roleFor = (user) => (admins.includes(user.name_key) ? 'admin' : user.role);
 
   function syncRole(user) {
@@ -72,18 +76,20 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
     resetPassword(userId, password) {
       const valid = validPassword(password);
       const salt = randomBytes(16).toString('hex');
-      q.resetPassword.run(salt, hashPassword(valid, salt), userId);
+      q.resetPassword.run(salt, hashPasswordSync(valid, salt), userId);
       q.deleteUserSessions.run(userId);
     },
 
-    register(rawName, rawPassword) {
+    async register(rawName, rawPassword) {
       const name = validName(rawName);
       const password = validPassword(rawPassword);
       const key = nameKey(name);
       if (admins.includes(key) || q.userByKey.get(key)) fail(409, '这个用户名已被使用');
       const salt = randomBytes(16).toString('hex');
       const id = newId(8);
-      q.insertUser.run(id, name, key, 'member', salt, hashPassword(password, salt), Date.now());
+      const hash = await hashPassword(password, salt);
+      if (q.userByKey.get(key)) fail(409, '这个用户名已被使用');
+      q.insertUser.run(id, name, key, 'member', salt, hash, Date.now());
       return q.userById.get(id);
     },
 
@@ -94,34 +100,42 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
       if (q.userByKey.get(key)) fail(409, '这个用户名已被使用');
       const salt = randomBytes(16).toString('hex');
       const id = newId(8);
-      q.insertUser.run(id, name, key, 'admin', salt, hashPassword(password, salt), Date.now());
+      q.insertUser.run(id, name, key, 'admin', salt, hashPasswordSync(password, salt), Date.now());
       return q.userById.get(id);
     },
 
-    login(rawName, rawPassword) {
+    async login(rawName, rawPassword) {
       const user = q.userByKey.get(nameKey(String(rawName ?? '')));
       const password = String(rawPassword ?? '').slice(0, 128);
+      const currentUser = () => {
+        const current = user && q.userById.get(user.id);
+        if (!current || current.salt !== user.salt || current.hash !== user.hash || current.hash_params !== user.hash_params)
+          fail(401, '用户名或密码不正确');
+        return current;
+      };
       // Hash even for unknown names so response time does not reveal which accounts exist.
       if (user?.hash_params) {
         // Malformed legacy params (bad JSON, missing/invalid scrypt fields) must not become a
         // 500: treat them exactly like a wrong password.
         try {
           const { N, r, p, keylen } = JSON.parse(user.hash_params);
-          const actual = scryptSync(password, user.salt, keylen, { N, r, p, maxmem: 64 * 1024 * 1024 });
+          const actual = await derive(password, user.salt, keylen, { N, r, p, maxmem: 64 * 1024 * 1024 });
           const stored = Buffer.from(user.hash, 'hex');
           if (actual.length !== stored.length || !timingSafeEqual(actual, stored)) fail(401, '用户名或密码不正确');
           const salt = randomBytes(16).toString('hex');
-          q.upgradeHash.run(salt, hashPassword(password, salt), user.id);
-          user.hash_params = null;
+          const hash = await hashPassword(password, salt);
+          currentUser();
+          q.upgradeHash.run(salt, hash, user.id);
         } catch (error) {
           if (error instanceof HttpError) throw error;
           fail(401, '用户名或密码不正确');
         }
       } else {
-        const actual = Buffer.from(hashPassword(password, user?.salt ?? DUMMY_SALT), 'hex');
+        const actual = await derive(password, user?.salt ?? DUMMY_SALT, 32, SCRYPT);
         if (!user || !timingSafeEqual(actual, Buffer.from(user.hash, 'hex'))) fail(401, '用户名或密码不正确');
+        currentUser();
       }
-      return syncRole(user);
+      return syncRole(q.userById.get(user.id));
     },
 
     startSession(res, userId) {
@@ -129,17 +143,17 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
       const now = Date.now();
       q.purgeSessions.run(now);
       q.insertSession.run(sha256(token), userId, now, now + sessionTtl);
-      res.setHeader('Set-Cookie', `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=${Math.floor(sessionTtl / 1000)}${secureCookies ? '; Secure' : ''}`);
+      res.setHeader('Set-Cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=${Math.floor(sessionTtl / 1000)}${secureCookies ? '; Secure' : ''}`);
     },
 
     endSession(req, res) {
-      const token = parseCookies(req.headers.cookie)[COOKIE];
+      const token = uniqueCookie(req.headers.cookie, cookieName);
       if (token) q.deleteSession.run(sha256(token));
-      res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=0${secureCookies ? '; Secure' : ''}`);
+      res.setHeader('Set-Cookie', `${cookieName}=; Path=/; HttpOnly; SameSite=${cookieSameSite}; Max-Age=0${secureCookies ? '; Secure' : ''}`);
     },
 
     userFrom(req) {
-      const token = parseCookies(req.headers.cookie)[COOKIE];
+      const token = uniqueCookie(req.headers.cookie, cookieName);
       if (!token) return null;
       const user = q.session.get(sha256(token), Date.now());
       return user ? syncRole(user) : null;

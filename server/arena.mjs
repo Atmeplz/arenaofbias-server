@@ -9,6 +9,7 @@
 // entries with few comparisons, prefer entries of similar strength, and avoid the previous
 // round's works, the voter's own uploads and pairs the voter has already judged.
 import { randomBytes } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { effortKey, entityKey, modelKey } from './catalog.mjs';
 import { transaction } from './db.mjs';
 import { fail } from './http.mjs';
@@ -36,7 +37,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     purge: db.prepare('DELETE FROM matches WHERE expires_at < ? AND id NOT IN (SELECT match_id FROM votes)'),
     insertVote: db.prepare("INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice, created_at, a_identity, b_identity, identity_source, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'arena')"),
     votedPair: db.prepare('SELECT 1 FROM votes WHERE user_id = ? AND pair_key = ?'),
-    votedPairs: db.prepare('SELECT pair_key FROM votes WHERE user_id = ? AND task_id = ?'),
+    votedPairs: db.prepare('SELECT pair_key, a_work, b_work FROM votes WHERE user_id = ? AND task_id = ?'),
     votes: db.prepare("SELECT * FROM votes WHERE source = 'arena' ORDER BY created_at"),
     votesOfTask: db.prepare("SELECT * FROM votes WHERE task_id = ? AND source = 'arena' ORDER BY created_at"),
     userVotes: db.prepare('SELECT COUNT(*) AS n FROM votes WHERE user_id = ?'),
@@ -53,7 +54,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
   // Eligibility follows current moderation/catalog membership; identity and score keys
   // come from the vote's saved snapshot and never drift with later label edits.
   // Votes without a snapshot (pre-snapshot test data) are not scored.
-  function countedVotes(taskId, snapshot = null) {
+  async function countedVotes(taskId, snapshot = null) {
     const works = new Map();
     const lookup = (task, id) => {
       const key = `${task}/${id}`;
@@ -64,6 +65,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
       return works.get(key);
     };
     const votes = [];
+    let scanned = 0;
     for (const row of taskId ? q.votesOfTask.all(taskId) : q.votes.all()) {
       if (!row.a_identity || !row.b_identity) continue;
       const a = lookup(row.task_id, row.a_work);
@@ -73,6 +75,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
         b: fromIdentity(row.b_correction) ?? fromIdentity(row.b_identity),
         choice: row.choice, userId: row.user_id ?? `vote:${row.id}`,
       });
+      if (++scanned % 100 === 0) await new Promise((resolve) => setImmediate(resolve));
     }
     return votes;
   }
@@ -84,63 +87,96 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     effort: by === 'model' ? '' : work.effort,
   });
 
-  function leaderboard({ task = null, by = 'config', snapshot = null } = {}) {
+  function rankOffThread(votes, by) {
+    if (votes.length < 500) return Promise.resolve(rankEntries(votes, by === 'model'
+      ? (work) => work.modelKey ?? modelKey(work) : (work) => work.configKey ?? entityKey(work), limits));
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./ranking-worker.mjs', import.meta.url), { workerData: { votes, by, limits } });
+      worker.once('message', resolve);
+      worker.once('error', reject);
+      worker.once('exit', (code) => { if (code !== 0) reject(new Error(`Ranking worker exited with ${code}`)); });
+    });
+  }
+
+  async function leaderboard({ task = null, by = 'config', snapshot = null } = {}) {
     const archive = snapshot ?? catalog.snapshot();
     const cacheKey = `${archive.version}|${task ?? '*'}|${by}`;
     if (cache.has(cacheKey)) return cache.get(cacheKey);
-    const keyOf = (work) => by === 'model' ? (work.modelKey ?? modelKey(work)) : (work.configKey ?? entityKey(work));
-    const votes = countedVotes(task, archive);
-    const ranked = rankEntries(votes, keyOf, limits);
-    const pool = task ? library.eligible(task, archive) : catalog.tasks().flatMap((t) => library.eligible(t.id, archive));
-    const works = new Map();
-    for (const work of pool) {
-      const key = keyOf(work);
-      if (!works.has(key)) works.set(key, { sample: work, count: 0 });
-      works.get(key).count++;
-    }
-    const rankedKeys = new Set(ranked.map((row) => row.key));
-    const result = {
-      task,
-      by,
-      totals: { votes: votes.length, voters: new Set(votes.map((vote) => vote.userId)).size, entries: ranked.length },
-      rows: ranked.map((row, i) => ({
-        rank: i + 1,
-        key: row.key,
-        ...describe(row.sample, by),
-        score: row.score,
-        interval: row.interval,
-        games: row.games,
-        wins: row.wins,
-        draws: row.draws,
-        losses: row.losses,
-        winRate: row.winRate,
-        voters: row.voters,
-        tasks: row.tasks,
-        works: works.get(row.key)?.count ?? 0,
-        provisional: row.provisional,
-      })),
-      unranked: [...works].filter(([key]) => !rankedKeys.has(key)).map(([key, { sample, count }]) => ({ key, ...describe(sample, by), works: count }))
-        .sort((a, b) => a.modelName.localeCompare(b.modelName, 'en', { numeric: true }) || a.effort.localeCompare(b.effort)),
-      provisionalGames: limits.provisionalGames,
-      updatedAt: new Date().toISOString(),
-    };
-    cache.set(cacheKey, result);
-    return result;
+    const activeCache = cache;
+    const pending = Promise.resolve().then(async () => {
+      const keyOf = (work) => by === 'model' ? (work.modelKey ?? modelKey(work)) : (work.configKey ?? entityKey(work));
+      const votes = await countedVotes(task, archive);
+      const ranked = await rankOffThread(votes, by);
+      const pool = task ? library.eligible(task, archive) : catalog.tasks().flatMap((t) => library.eligible(t.id, archive));
+      const works = new Map();
+      for (const work of pool) {
+        const key = keyOf(work);
+        if (!works.has(key)) works.set(key, { sample: work, count: 0 });
+        works.get(key).count++;
+      }
+      const rankedKeys = new Set(ranked.map((row) => row.key));
+      const result = {
+        task,
+        by,
+        totals: { votes: votes.length, voters: new Set(votes.map((vote) => vote.userId)).size, entries: ranked.length },
+        rows: ranked.map((row, i) => ({
+          rank: i + 1,
+          key: row.key,
+          ...describe(row.sample, by),
+          score: row.score,
+          interval: row.interval,
+          games: row.games,
+          wins: row.wins,
+          draws: row.draws,
+          losses: row.losses,
+          winRate: row.winRate,
+          voters: row.voters,
+          tasks: row.tasks,
+          works: works.get(row.key)?.count ?? 0,
+          provisional: row.provisional,
+        })),
+        unranked: [...works].filter(([key]) => !rankedKeys.has(key)).map(([key, { sample, count }]) => ({ key, ...describe(sample, by), works: count }))
+          .sort((a, b) => a.modelName.localeCompare(b.modelName, 'en', { numeric: true }) || a.effort.localeCompare(b.effort)),
+        provisionalGames: limits.provisionalGames,
+        updatedAt: new Date().toISOString(),
+      };
+      if (cache === activeCache) activeCache.set(cacheKey, result);
+      return result;
+    });
+    activeCache.set(cacheKey, pending);
+    try { return await pending; }
+    catch (error) { activeCache.delete(cacheKey); throw error; }
   }
 
-  function candidatesFor(taskId, groups, voted, avoid) {
-    const keys = [...groups.keys()];
+  function candidatesFor(groups, votedRows, avoid) {
+    const entries = [...groups].map(([key, works]) => [key, works.filter((work) => !avoid.has(work.id))]);
+    const groupOf = new Map();
+    for (let i = 0; i < entries.length; i++) for (const work of entries[i][1]) groupOf.set(work.id, i);
+    const unavailable = new Map();
+    for (const row of votedRows) {
+      const a = groupOf.get(row.a_work), b = groupOf.get(row.b_work);
+      if (a === undefined || b === undefined || a === b) continue;
+      const key = `${Math.min(a, b)}:${Math.max(a, b)}`;
+      unavailable.set(key, (unavailable.get(key) ?? 0) + 1);
+    }
     const candidates = [];
-    for (let i = 0; i < keys.length; i++) {
-      const left = groups.get(keys[i]).filter((work) => !avoid.has(work.id));
-      for (let j = i + 1; j < keys.length; j++) {
-        const right = groups.get(keys[j]).filter((work) => !avoid.has(work.id));
-        const pairs = [];
-        for (const a of left) for (const b of right) if (!voted.has(pairKey(taskId, a.id, b.id))) pairs.push([a, b]);
-        if (pairs.length) candidates.push({ keys: [keys[i], keys[j]], pairs });
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const available = entries[i][1].length * entries[j][1].length - (unavailable.get(`${i}:${j}`) ?? 0);
+        if (available > 0) candidates.push({ keys: [entries[i][0], entries[j][0]], left: entries[i][1], right: entries[j][1], available });
       }
     }
     return candidates;
+  }
+
+  function pickWorks(taskId, chosen, voted, random) {
+    let index = Math.floor(random() * chosen.available);
+    if (!voted.size) return [chosen.left[Math.floor(index / chosen.right.length)], chosen.right[index % chosen.right.length]];
+    for (const a of chosen.left) for (const b of chosen.right) {
+      if (voted.has(pairKey(taskId, a.id, b.id))) continue;
+      if (index-- === 0) return [a, b];
+    }
+    throw new Error('Candidate count changed while sampling');
   }
 
   function pick(candidates, board) {
@@ -174,7 +210,7 @@ export function createArena({ db, catalog, library, limits, random = Math.random
     leaderboard,
     poolStats,
 
-    createMatch(user, taskId, previousId, snapshot = catalog.snapshot()) {
+    async createMatch(user, taskId, previousId, snapshot = catalog.snapshot()) {
       if (!snapshot.task(taskId) && !catalog.task(taskId)) fail(404, '题目不存在');
       if (random() < 0.02) q.purge.run(Date.now() - 24 * 3600e3);
       const groups = new Map();
@@ -185,15 +221,16 @@ export function createArena({ db, catalog, library, limits, random = Math.random
         groups.get(key).push(work);
       }
       if (groups.size < 2) fail(409, '这道题还没有两个不同模型配置的已验证作品', 'insufficient');
-      const voted = new Set(user ? q.votedPairs.all(user.id, taskId).map((row) => row.pair_key) : []);
+      const votedRows = user ? q.votedPairs.all(user.id, taskId).filter((row) => row.pair_key.startsWith(`${taskId}:`)) : [];
+      const voted = new Set(votedRows.map((row) => row.pair_key));
       const previous = previousId ? q.match.get(String(previousId)) : user ? q.lastMatch.get(user.id, taskId) : null;
       const avoid = new Set(previous?.task_id === taskId ? [previous.a_work, previous.b_work] : []);
-      let candidates = candidatesFor(taskId, groups, voted, avoid);
-      if (!candidates.length && avoid.size) candidates = candidatesFor(taskId, groups, voted, new Set());
+      let candidates = candidatesFor(groups, votedRows, avoid);
+      if (!candidates.length && avoid.size) candidates = candidatesFor(groups, votedRows, new Set());
       if (!candidates.length) fail(409, '这道题的组合你都已经评过了，换一道题试试', 'exhausted');
 
-      const chosen = pick(candidates, leaderboard({ task: taskId, snapshot }));
-      const [first, second] = chosen.pairs[Math.floor(random() * chosen.pairs.length)];
+      const chosen = pick(candidates, await leaderboard({ task: taskId, snapshot }));
+      const [first, second] = pickWorks(taskId, chosen, voted, random);
       const [a, b] = random() < 0.5 ? [first, second] : [second, first];
       const id = randomBytes(12).toString('hex');
       const now = Date.now();

@@ -208,7 +208,7 @@ test('closing the platform waits for a reset email sent after the response', asy
   const other = createPlatform({ config: { dist, dataDir: join(root, 'shutdown-data'),
     contentTemplate: 'http://{token}.localhost:9999', siteOrigins: [], admins: [], cdn: [],
     capture: false, secureCookies: false, trustProxy: false }, limits });
-  const user = other.auth.register('shutdown-user', 'correct horse');
+  const user = await other.auth.register('shutdown-user', 'correct horse');
   other.auth.bindEmail(user.id, 'shutdown@test.invalid');
   const local = createHttpServer(other.handleSite);
   await listen(local);

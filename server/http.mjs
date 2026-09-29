@@ -62,6 +62,19 @@ export function parseCookies(header = '') {
   return cookies;
 }
 
+export function uniqueCookie(header = '', name) {
+  let value;
+  let count = 0;
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index <= 0 || part.slice(0, index).trim() !== name) continue;
+    if (++count > 1) return null;
+    try { value = decodeURIComponent(part.slice(index + 1).trim()); }
+    catch { return null; }
+  }
+  return value ?? null;
+}
+
 export function clientIp(req, trustProxy) {
   const forwarded = trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
   return forwarded || req.socket.remoteAddress || 'unknown';
