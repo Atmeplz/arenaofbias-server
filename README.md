@@ -62,6 +62,15 @@ npm start
 | `COOKIE_SAME_SITE` | `Lax` | `Lax` / `Strict` / `None`；跨站 HTTPS 部署用 `None`，并必须开启 `COOKIE_SECURE=1` |
 | `TRUST_PROXY` | 关（`1` 开启） | 信任反向代理的客户端 IP 头 |
 | `SERVER_VERSION` | Git HEAD 或 `dev` | 启动时确定的服务端版本，返回在 bootstrap 中 |
+| `SMTP_HOST` / `SMTP_PORT` | 未配置 / `465` | 验证码 SMTP 主机与端口（465 隐式 TLS；其它端口默认 STARTTLS） |
+| `SMTP_USER` / `SMTP_PASS` | 未配置 | SMTP 登录身份和密码；缺少任一项时不能发验证码 |
+| `SMTP_FROM` / `SMTP_FROM_NAME` | 用户名 / `Arena of Bias` | 发件地址和名称 |
+| `SMTP_STARTTLS` | 开（`0` 关闭） | 只供本地明文 SMTP 测试；生产保持开启 |
+| `MAIL_SMTP_TIMEOUT_MS` | `20000` | SMTP 超时毫秒数 |
+| `MAIL_CODE_TTL_MS` / `MAIL_CODE_MAX_ATTEMPTS` | `600000` / `5` | 验证码有效期和输错上限 |
+| `MAIL_COOLDOWN_MS` / `MAIL_IP_MAX` / `MAIL_EMAIL_MAX` | `60000` / `8` / `3` | 发码冷却及 15 分钟内按 IP、邮箱限流 |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | 未配置 | 两项均配置才开启；站点密钥经 `/api/auth/turnstile` 下发 |
+| `TURNSTILE_VERIFY_URL` | Cloudflare siteverify | 校验地址，本地测试可指向桩服务 |
 
 收录流程不需要数据仓库路径环境变量：管理员提名后，在 `arenaofbias-data` 中运行返回的命令；数据包发布并切换后，带 `sourceUpload` 的馆藏作品自动接管投稿。
 
@@ -75,6 +84,11 @@ npm start
 | POST | `/api/auth/register` | 注册并建立会话（限流） |
 | POST | `/api/auth/login` | 登录（限流） |
 | POST | `/api/auth/logout` | 登出 |
+| GET | `/api/auth/turnstile` | 获取 Turnstile 站点密钥；未开启时返回 `null` |
+| POST | `/api/auth/email/send` | 发绑定或重置密码验证码 |
+| POST | `/api/auth/email/verify` | 预校验验证码 |
+| POST | `/api/auth/email/bind` | 登录后绑定或更换邮箱 |
+| POST | `/api/auth/password/reset` | 凭邮箱验证码重置密码并撤销所有会话 |
 | POST | `/api/questions` | 发布社区题目，保留提示词、标签和允许的提交格式（需登录） |
 | POST | `/api/drafts?task=&name=&template=` | 上传 ZIP/HTML，检查后暂存为草稿；`template=static|vite` 可选，Vite 项目必须含构建产物（需登录，限流） |
 | DELETE | `/api/drafts/:id` | 丢弃草稿（需登录） |

@@ -390,10 +390,6 @@ export function registerShow1Compat(router, deps) {
 
   // ---- postponed features ------------------------------------------------------------
 
-  router.on('GET', '/api/auth/turnstile', () => ({ siteKey: '' }));
-  for (const path of ['/api/auth/email/send', '/api/auth/email/verify', '/api/auth/email/bind', '/api/auth/password/reset']) {
-    router.on('POST', path, () => fail(501, '邮箱功能暂未开放'));
-  }
   // NB: /share/*.png live outside /api/, so the site's static handler never reaches the
   // router for them in production; they are registered here for completeness and tests.
   for (const path of ['/api/share', '/share/card.png', '/share/og.png']) {

@@ -244,7 +244,7 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 
 **认证**：无。**限流**：auth 桶（10 次/分钟/IP）。
 
-请求体：`{ "name": "…", "password": "…" }`
+请求体：`{ "name": "…", "password": "…", "turnstileToken": "…" }`；Show1 可用 `username` 代替 `name`。邮箱选填且不在注册时验证；Turnstile 启用时必须提供 token，未配置两把密钥时自动关闭。
 
 成功 `200`（**同时种下会话 Cookie，即注册即登录**）：
 
@@ -252,7 +252,9 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 { "user": { "id": "…", "name": "alice", "role": "member" } }
 ```
 
-错误：`400` 用户名 / 密码不合规；`409` 用户名已被使用；`415`；`429`。
+Show1 兼容字段额外包含 `username` 和 `email`（未绑定为 `null`）。`GET /api/auth/me` 的 `user` 返回 `{ id, username, role, email }`，绑定后为真实归一化邮箱。
+
+错误：`400` 用户名 / 密码不合规或人机验证失败；`409` 用户名已被使用；`415`；`429`；人机验证服务不可用时 `503`。
 
 ### 3.3 `POST /api/auth/login` —— 登录
 
@@ -265,6 +267,18 @@ v6 新增 `comments` 表：`id`（24 位十六进制）、`task_id`、`work_id`�
 **认证**：无（无会话亦为成功）。**限流**：无。请求体：无。
 
 响应：`{ "ok": true }`，删除服务端会话并清空 Cookie。
+
+### 3.4.1 邮箱验证码、绑定与找回
+
+`GET /api/auth/turnstile` 返回 `{ "siteKey": string | null }`。只有 `TURNSTILE_SITE_KEY` 与 `TURNSTILE_SECRET_KEY` 都配置时才启用；注册提交和发码请求都校验 `turnstileToken`。
+
+`POST /api/auth/email/send`：绑定请求 `{ "purpose": "bind", "email": "…", "turnstileToken": "…" }`，需登录，成功返回 `{ "sent": true, "email": "归一化邮箱" }`。重置请求 `{ "purpose": "reset", "username": "…", "turnstileToken": "…" }`，无论账号是否存在或是否绑定邮箱，成功响应均为 `{ "sent": true, "email": "" }`；不提供邮箱占用提示。发码按 IP 和目标邮箱每 15 分钟限流，另有同地址 60 秒冷却（可用 `MAIL_*` 调整）。SMTP 未配置时绑定返回 `503`；重置仍采用统一响应。
+
+`POST /api/auth/email/verify`：`{ "purpose": "bind", "email": "…", "code": "六位数字" }` 或 `{ "purpose": "reset", "username": "…", "code": "六位数字" }`。成功 `{ "ok": true }`，不消耗验证码。验证码默认 10 分钟有效、输错 5 次作废；数据库只存哈希。
+
+`POST /api/auth/email/bind`：需登录，`{ "email": "…", "code": "…" }`；成功 `{ "user": <Show1 兼容用户> }`。同一账号可换绑，邮箱全局唯一且大小写归一。
+
+`POST /api/auth/password/reset`：`{ "username": "…", "code": "…", "password": "…" }`；成功 `{ "reset": true }` 并删除该用户所有会话。错误验证码和不存在的账号统一返回 `400` 的验证码错误。
 
 ### 3.5 草稿：`POST /api/drafts` 与 `DELETE /api/drafts/:id`
 
@@ -697,9 +711,7 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 以下各项**在当前代码中不存在**，列入契约仅为双方对齐方向；实现前以单独 PR 补充正式文档：
 
 1. **votes 表 `source` 列**：区分票源——娱乐面 / 正式盲评 / 历史迁移。配套迁移追加至 `MIGRATIONS`，排行统计按票源加权或过滤的规则另行拍板。关联现状：当前匿名投票完全不落库（见 3.9），娱乐面开放匿名计票需一并拍板。
-2. **users 表 `email` / `email_verified_at` 列**：邮箱与验证时间；`hash_params` 已在 v6 实现。
-3. **猜模型端点（模一把）**：移植自 Show1——先投票后猜模型或猜对加成的玩法端点，形态待定。
-4. **邮箱验证码与 Turnstile**：注册 / 登录的人机校验与邮箱验证流程；上线后 auth 桶限流策略预计同步调整。
+2. **猜模型端点（模一把）**：移植自 Show1——先投票后猜模型或猜对加成的玩法端点，形态待定。
 
 ---
 
