@@ -1,5 +1,11 @@
 # HANDOFF.md · 当前状态
 
+## 2026-09-29 · share-v2（待 PR 审阅，未部署）
+
+- 从 `origin/main@360ec7a` 建立，已 rebase 到 `origin/main@2dfd952`（含 fix-round1）。删除 Show1 兼容层四条分享 501 占位路由；Show1 与 Show2 前端已确认不再调用。无 npm 依赖、无数据库迁移。
+- 找回密码发码在完成 Turnstile 校验后立即返回统一响应，真实 SMTP 在后台执行；失败只记日志。测试让 SMTP 暂缓确认，验证绑定邮箱的响应先于发信完成。
+- `npm run check && npm test` 通过（rebase 后 96/96）。配套 Show1 `share-v2` PR 应先于本 PR 的路由删除部署，以免仍在运行的旧前端收到 404；本轮不合并、不部署。
+
 ## 2026-09-29 · fix-round1（待 PR 审阅，未部署）
 
 - 从 `origin/main@9c32bb9` 建立。修复审计 S-01、S-02、C-01、C-03、C-04、C-05、C-06、DP-01、DP-06 服务端部分；无 npm 依赖、无数据库迁移、未改动已有数据。
