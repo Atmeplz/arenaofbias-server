@@ -203,6 +203,41 @@ test('reset send is indistinguishable for unknown accounts; reset revokes every 
   assert.equal((await post('/api/auth/login', { username: 'alice', password: 'new correct horse' })).data.user.email, 'new@test.invalid');
 });
 
+test('closing the platform waits for a reset email sent after the response', async () => {
+  const dist = join(root, 'dist');
+  const other = createPlatform({ config: { dist, dataDir: join(root, 'shutdown-data'),
+    contentTemplate: 'http://{token}.localhost:9999', siteOrigins: [], admins: [], cdn: [],
+    capture: false, secureCookies: false, trustProxy: false }, limits });
+  const user = other.auth.register('shutdown-user', 'correct horse');
+  other.auth.bindEmail(user.id, 'shutdown@test.invalid');
+  const local = createHttpServer(other.handleSite);
+  await listen(local);
+  const localBase = `http://127.0.0.1:${local.address().port}`;
+  holdSmtpReply = true;
+  const held = new Promise((resolve) => { smtpReplyHeld = resolve; });
+  try {
+    const response = await fetch(`${localBase}/api/auth/email/send`, { method: 'POST',
+      headers: { origin: localBase, 'content-type': 'application/json' },
+      body: JSON.stringify({ purpose: 'reset', username: 'shutdown-user' }) });
+    assert.equal(response.status, 200);
+    await held;
+    await close(local);
+    let closed = false;
+    const closing = other.close().then(() => { closed = true; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(closed, false);
+    releaseSmtpReply();
+    await closing;
+    assert.equal(closed, true);
+  } finally {
+    holdSmtpReply = false;
+    smtpReplyHeld = undefined;
+    releaseSmtpReply?.();
+    releaseSmtpReply = undefined;
+    if (local.listening) await close(local);
+  }
+});
+
 test('configured Turnstile verifies registration and email sends through a local HTTP stub', async () => {
   const checks = [];
   const stub = createHttpServer((req, res) => {

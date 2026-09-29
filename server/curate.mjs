@@ -10,8 +10,8 @@ export function createCurator({ db, catalog, library, onTakeover = () => {} }) {
   const nominateRow = db.prepare('UPDATE works SET nominated_at = ?, nominated_by = ?, export_token_hash = ?, export_expires_at = ? WHERE id = ?');
   const clearRow = db.prepare('UPDATE works SET nominated_at = NULL, nominated_by = NULL, export_token_hash = NULL, export_expires_at = NULL WHERE id = ?');
   const byToken = db.prepare('SELECT task_id, id FROM works WHERE export_token_hash = ? AND export_expires_at > ? AND curated_as IS NULL AND deleted_at IS NULL');
-  const takeoverRow = db.prepare('UPDATE works SET curated_as = ?, nominated_at = NULL, nominated_by = NULL, export_token_hash = NULL, export_expires_at = NULL WHERE id = ? AND task_id = ? AND curated_as IS NULL AND deleted_at IS NULL');
-  const sourceFlags = db.prepare('SELECT show_gallery, show_arena FROM works WHERE id = ? AND task_id = ? AND curated_as IS NULL AND deleted_at IS NULL');
+  const takeoverRow = db.prepare('UPDATE works SET curated_as = ?, nominated_at = NULL, nominated_by = NULL, export_token_hash = NULL, export_expires_at = NULL WHERE id = ? AND task_id = ? AND digest = ? AND nominated_at IS NOT NULL AND curated_as IS NULL AND deleted_at IS NULL');
+  const sourceFlags = db.prepare('SELECT task_id, digest, nominated_at, show_gallery, show_arena FROM works WHERE id = ? AND curated_as IS NULL AND deleted_at IS NULL');
   const inheritFlags = db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
     VALUES (?, ?, ?, ?, '系统', ?) ON CONFLICT(task_id, work_id) DO NOTHING`);
   const audit = db.prepare('INSERT INTO audit (at, actor_id, actor_name, action, task_id, work_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
@@ -96,9 +96,15 @@ export function createCurator({ db, catalog, library, onTakeover = () => {} }) {
       for (const task of snapshot.tasks()) for (const work of task.works.values()) {
         if (!/^up-[a-z0-9]+$/.test(work.sourceUpload ?? '')) continue;
         const target = `${task.id}/${work.id}`;
-        const flags = sourceFlags.get(work.sourceUpload, task.id);
-        if (!flags) continue;
-        const changed = takeoverRow.run(target, work.sourceUpload, task.id);
+        const flags = sourceFlags.get(work.sourceUpload);
+        const reason = !flags ? '投稿不存在' : !flags.nominated_at ? '投稿未提名'
+          : flags.task_id !== task.id ? '题目不一致'
+            : !/^[a-f0-9]{64}$/.test(work.sourceDigest ?? '') || flags.digest !== work.sourceDigest ? '内容摘要不一致' : null;
+        if (reason) {
+          audit.run(Date.now(), null, '系统', 'curate-reject', task.id, work.sourceUpload, `${target}: ${reason}`);
+          continue;
+        }
+        const changed = takeoverRow.run(target, work.sourceUpload, task.id, work.sourceDigest);
         if (changed.changes) {
           changedAny = true;
           inheritFlags.run(task.id, work.id, flags.show_gallery, flags.show_arena, Date.now());

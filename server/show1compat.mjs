@@ -55,8 +55,8 @@ export function registerShow1Compat(router, deps) {
     insertMatch: db.prepare(`INSERT INTO matches (id, user_id, task_id, a_work, b_work, a_token, b_token, created_at,
       expires_at, choice, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     insertVote: db.prepare(`INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice,
-      created_at, a_identity, b_identity, identity_source, source, compat_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snapshot', 'show1', ?)`),
+      created_at, a_identity, b_identity, identity_source, source, compat_mode, compat_weights_json, compat_weight_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'snapshot', 'show1', ?, ?, 'cast')`),
     commentsOfTask: db.prepare(`SELECT comments.id, comments.side, comments.body, comments.created_at, users.name AS username
       FROM comments JOIN works ON works.id = comments.work_id LEFT JOIN users ON users.id = comments.user_id
       WHERE works.task_id = ? AND comments.deleted_at IS NULL
@@ -71,23 +71,30 @@ export function registerShow1Compat(router, deps) {
     addReaction: db.prepare('INSERT OR IGNORE INTO reactions (task_id, work_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)'),
     pageView: db.prepare('INSERT INTO page_views (day, path, ip_hash, created_at) VALUES (?, ?, ?, ?)'),
     arenaEditorial: db.prepare("SELECT commentary, weights_json FROM task_editorial WHERE task_id = ? AND face = 'arena'"),
+    liveWorks: db.prepare("SELECT id, task_id, model_id, model_name, title, content_key FROM works WHERE status = 'verified' AND show_arena = 1 AND curated_as IS NULL AND deleted_at IS NULL ORDER BY created_at, id"),
   };
 
   const promptOf = (id) => snapshot.prompts.find((prompt) => prompt.id === id) ?? null;
   const published = (round) => Object.hasOwn(snapshot.taskByRound, round);
   // The roster sorted by rid once: every "first work of a mid/task" lookup is deterministic.
-  const roster = Object.entries(snapshot.workMap).sort(([a], [b]) => a.localeCompare(b));
+  const liveWorks = () => q.liveWorks.all().filter((row) => snapshot.roundByTask[row.task_id] && !snapshot.upToRid[row.id]);
+  const workMap = () => Object.fromEntries([
+    ...Object.entries(snapshot.workMap),
+    ...liveWorks().map((row) => [row.id, { up: row.id, key: row.content_key, task: row.task_id,
+      round: snapshot.roundByTask[row.task_id], mid: row.model_id, modelName: row.model_name, title: row.title }]),
+  ]);
+  const roster = () => Object.entries(workMap()).sort(([a], [b]) => a.localeCompare(b));
   const workOf = (taskId, mid) => {
-    for (const [, work] of roster) if (work.task === taskId && work.mid === mid) return work;
+    for (const [, work] of roster()) if (work.task === taskId && work.mid === mid) return work;
     return null;
   };
   const anyWorkOf = (taskId) => {
-    for (const [, work] of roster) if (work.task === taskId) return work;
+    for (const [, work] of roster()) if (work.task === taskId) return work;
     return null;
   };
   const midOfWorkId = (workId) => {
-    const rid = snapshot.upToRid[workId];
-    return rid ? snapshot.workMap[rid]?.mid ?? null : null;
+    const rid = snapshot.upToRid[workId] ?? workId;
+    return workMap()[rid]?.mid ?? null;
   };
 
   // A live compat vote back to the old vote shape (goldens: votes_*.json). Tie votes
@@ -115,7 +122,8 @@ export function registerShow1Compat(router, deps) {
       promptKind: prompt?.kind ?? null,
     };
     // Mirrors the old parseWeightsColumn: the key is absent when the prompt has no weights.
-    if (prompt?.weights != null) vote.promptWeights = prompt.weights;
+    const weights = row.compat_weights_json ? JSON.parse(row.compat_weights_json) : prompt?.weights;
+    if (weights != null) vote.promptWeights = weights;
     return vote;
   }
 
@@ -123,13 +131,7 @@ export function registerShow1Compat(router, deps) {
 
   function mergedVotes(scope) {
     const live = (scope === 'formal' ? q.liveFormal : q.liveEntertainment).all().map(oldShape);
-    const merged = [...snapshot.votes[scope], ...live].sort(byTimeThenId);
-    // 与旧站一致：权重跟随当前设置，历史票按最新权重回放（雷达图依赖 vote.promptWeights）。
-    return merged.map((vote) => {
-      const row = q.arenaEditorial.get(snapshot.taskByRound[vote.promptId] ?? '');
-      if (row?.weights_json) vote.promptWeights = JSON.parse(row.weights_json);
-      return vote;
-    });
+    return [...snapshot.votes[scope], ...live].sort(byTimeThenId);
   }
 
   const scopeOf = (ctx) => {
@@ -144,7 +146,11 @@ export function registerShow1Compat(router, deps) {
     const row = q.arenaEditorial.get(snapshot.taskByRound[prompt.id] ?? '');
     return row ? { ...prompt, commentary: row.commentary, ...(row.weights_json ? { weights: JSON.parse(row.weights_json) } : {}) } : prompt;
   }) }));
-  router.on('GET', '/api/works', () => ({ works: snapshot.works }));
+  router.on('GET', '/api/works', () => ({ works: [...snapshot.works, ...liveWorks().map((row) => ({
+    id: row.id, promptId: snapshot.roundByTask[row.task_id], modelId: row.model_id,
+    modelName: row.model_name, title: row.title, isDemo: 0,
+    content: JSON.stringify({ kind: 'html', src: `${deps.config.contentTemplate.replace('{token}', row.content_key)}/` }),
+  }))] }));
 
   router.on('GET', '/api/votes', (ctx) => ({ votes: mergedVotes(scopeOf(ctx)) }));
 
@@ -187,16 +193,17 @@ export function registerShow1Compat(router, deps) {
     if (mode === 'formal' && user.role !== 'admin') fail(403, '正式测评为资格制，暂未开放。');
     const outcome = body.outcome == null ? 'win' : String(body.outcome);
     if (!['win', 'draw'].includes(outcome)) fail(400, '投票结果无效');
-    const winner = snapshot.workMap[winnerRid];
-    const loser = snapshot.workMap[loserRid];
+    const map = workMap();
+    const winner = map[winnerRid];
+    const loser = map[loserRid];
     if (!winner || !loser || winner.round !== promptId || loser.round !== promptId
       || winner.mid !== winnerMid || loser.mid !== loserMid) fail(400, '投票内容与作品不匹配');
 
     // a/b follow the rid order, like the migration's placeholder matches; the choice then
     // falls out of which side won (a draw is a tie, side a reports as the old "winner").
     const [aRid, bRid] = [winnerRid, loserRid].sort((x, y) => x.localeCompare(y));
-    const a = snapshot.workMap[aRid];
-    const b = snapshot.workMap[bRid];
+    const a = map[aRid];
+    const b = map[bRid];
     const choice = outcome === 'draw' ? 'tie' : aRid === winnerRid ? 'a' : 'b';
     const pairKey = `show1:${mode === 'formal' ? 1 : 0}:${aRid}+${bRid}`;
 
@@ -215,6 +222,8 @@ export function registerShow1Compat(router, deps) {
 
     const taskId = snapshot.taskByRound[promptId];
     const now = Date.now();
+    const editorial = q.arenaEditorial.get(taskId);
+    const weights = editorial?.weights_json ? JSON.parse(editorial.weights_json) : promptOf(promptId)?.weights ?? null;
     const identity = (entry) => JSON.stringify({
       taskId, id: entry.up, curated: false, title: entry.title,
       modelId: entry.mid, modelName: entry.modelName, vendor: '', effort: '',
@@ -228,7 +237,8 @@ export function registerShow1Compat(router, deps) {
           `w${sha256(`show1:match-token:${id}:a`).slice(0, 32)}`,
           `m${sha256(`show1:match-token:${id}:b`).slice(0, 32)}`,
           now, now, choice, now);
-        q.insertVote.run(id, matchId, user.id, taskId, a.up, b.up, pairKey, choice, now, identity(a), identity(b), mode);
+        q.insertVote.run(id, matchId, user.id, taskId, a.up, b.up, pairKey, choice, now, identity(a), identity(b), mode,
+          weights ? JSON.stringify(weights) : null);
       });
     } catch (error) {
       // A concurrent first write can still hit UNIQUE (user_id, pair_key) or the id PK.

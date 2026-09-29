@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { createPlatform } from '../server/app.mjs';
+import { createCurator } from '../server/curate.mjs';
 import { limits } from '../server/config.mjs';
 
 const PAGE = '<!doctype html><html><body><p>Candidate</p></body></html>';
@@ -99,11 +100,30 @@ describe('nomination and export', () => {
     }
   });
 
+  test('takeover audits and rejects missing nomination, wrong task, or wrong source digest', async () => {
+    await call('root', 'DELETE', `/api/admin/works/one/${id}/nominate`);
+    const curator = createCurator({ db: platform.db, catalog: {}, library: platform.library });
+    const sourceDigest = platform.db.prepare('SELECT digest FROM works WHERE id = ?').get(id).digest;
+    const candidate = (taskId, digest) => ({ id: 'candidate', sourceUpload: id, sourceDigest: digest });
+    const snapshot = (taskId, digest) => ({ tasks: () => [{ id: taskId, works: new Map([['candidate', candidate(taskId, digest)]]) }] });
+    const rejected = () => platform.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'curate-reject' AND work_id = ?").get(id).n;
+    let count = rejected();
+    curator.takeover(snapshot('one', sourceDigest));
+    assert.equal(rejected(), ++count);
+    await call('root', 'POST', `/api/admin/works/one/${id}/nominate`);
+    curator.takeover(snapshot('other', sourceDigest));
+    assert.equal(rejected(), ++count);
+    curator.takeover(snapshot('one', 'f'.repeat(64)));
+    assert.equal(rejected(), ++count);
+    assert.equal(platform.db.prepare('SELECT curated_as FROM works WHERE id = ?').get(id).curated_as, null);
+  });
+
   test('new catalog sourceUpload retires the upload once', async () => {
     const nomination = await call('root', 'POST', `/api/admin/works/one/${id}/nominate`);
     assert.equal(nomination.status, 200);
     task.results.push({ id: 'new', model: 'm-a', effort: '', title: 'New', summary: '',
-      scene: 'results/one/new/', captures: {}, gallery: [], sourceUpload: id });
+      scene: 'results/one/new/', captures: {}, gallery: [], sourceUpload: id,
+      sourceDigest: platform.db.prepare('SELECT digest FROM works WHERE id = ?').get(id).digest });
     mkdirSync(join(dist, 'results/one/new'), { recursive: true });
     writeFileSync(join(dist, 'results/one/new/index.html'), PAGE);
     writeFileSync(join(dist, 'data.json'), JSON.stringify(data));
@@ -132,6 +152,7 @@ describe('nomination and export', () => {
       const uploadId = submitted.data.work.id;
       assert.equal((await call('root', 'POST', `/api/works/one/${uploadId}/review`,
         { status: 'verified', show_gallery: gallery, show_arena: arena })).status, 200);
+      assert.equal((await call('root', 'POST', `/api/admin/works/one/${uploadId}/nominate`)).status, 200);
       return uploadId;
     }
     const inheritedId = await submit('inherited', true, true);
@@ -143,7 +164,8 @@ describe('nomination and export', () => {
       VALUES ('one', 'preserved-curated', 0, 0, 'editor', ?)`).run(Date.now());
     for (const [curatedId, sourceUpload] of [['inherited-curated', inheritedId], ['preserved-curated', preservedId]]) {
       task.results.push({ id: curatedId, model: 'm-a', effort: '', title: curatedId, summary: '',
-        scene: `results/one/${curatedId}/`, captures: {}, gallery: [], sourceUpload });
+        scene: `results/one/${curatedId}/`, captures: {}, gallery: [], sourceUpload,
+        sourceDigest: platform.db.prepare('SELECT digest FROM works WHERE id = ?').get(sourceUpload).digest });
       mkdirSync(join(dist, 'results/one', curatedId), { recursive: true });
       writeFileSync(join(dist, 'results/one', curatedId, 'index.html'), PAGE);
     }

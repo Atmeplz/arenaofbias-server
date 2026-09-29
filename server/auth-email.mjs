@@ -13,6 +13,7 @@ const invalidCode = () => fail(400, '验证码不正确或已过期，请重新�
 const resetResponse = { sent: true, email: '' };
 
 export function createEmailAuth(db, auth) {
+  const background = new Set();
   const q = {
     userByName: db.prepare('SELECT * FROM users WHERE name_key = ?'),
     userByEmail: db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE'),
@@ -73,6 +74,7 @@ export function createEmailAuth(db, auth) {
   }
 
   return {
+    async drain() { await Promise.all(background); },
     gate,
     async send(body, user, ip) {
       const purpose = body.purpose;
@@ -93,9 +95,11 @@ export function createEmailAuth(db, auth) {
       }
       if (!email) return resetResponse;
       if (purpose === 'reset') {
-        void issue(purpose, email).catch((error) => {
+        const delivery = issue(purpose, email).catch((error) => {
           console.error('Reset email delivery failed:', error);
         });
+        background.add(delivery);
+        void delivery.finally(() => background.delete(delivery));
         return resetResponse;
       }
       try {

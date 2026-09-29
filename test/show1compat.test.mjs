@@ -54,7 +54,7 @@ function createFixture({ snapshot = fixtureSnapshot(), admins = ['root'] } = {})
   const db = openDatabase(':memory:');
   const auth = createAuth(db, { admins, secureCookies: false, sessionTtl: 60000 });
   const router = createRouter();
-  registerShow1Compat(router, { db, snapshot, limit: {} });
+  registerShow1Compat(router, { db, snapshot, config: { contentTemplate: 'https://{token}.works.test' }, limit: {} });
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://test.invalid');
@@ -142,6 +142,37 @@ test('v8 migrates a v7 database: vote sources, comment sides and the new tables'
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test('weight migration restores prior arena audit weights and falls back to original weights', () => {
+  const root = mkdtempSync(join(tmpdir(), 'show1-weights-'));
+  const file = join(root, 'platform.db');
+  const old = new DatabaseSync(file);
+  try {
+    for (const step of MIGRATIONS.slice(0, -1)) {
+      if (typeof step === 'function') step(old);
+      else old.exec(step);
+    }
+    old.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+    const add = old.prepare(`INSERT INTO votes (id, match_id, task_id, a_work, b_work, pair_key, choice,
+      created_at, a_identity, b_identity, identity_source, source) VALUES (?, ?, 'show1-001', 'a', 'b', ?, 'a', ?, '{}', '{}', 'snapshot', 'show1')`);
+    add.run('before', 'm-before', 'p-before', 10);
+    add.run('after', 'm-after', 'p-after', 30);
+    add.run('later', 'm-later', 'p-later', 50);
+    const audit = old.prepare("INSERT INTO audit (at, actor_name, action, task_id, detail) VALUES (?, 'admin', 'editorial', 'show1-001', ?)");
+    audit.run(20, JSON.stringify({ face: 'arena', weights: [1, 0, 0, 0, 0, 0] }));
+    audit.run(40, JSON.stringify({ face: 'arena', weights: [0, 1, 0, 0, 0, 0] }));
+  } finally { old.close(); }
+  const db = openDatabase(file);
+  try {
+    const rows = db.prepare("SELECT id, compat_weights_json, compat_weight_source FROM votes ORDER BY created_at").all();
+    assert.deepEqual(rows.map((row) => JSON.parse(row.compat_weights_json)),
+      [[0.3, 0, 0.6, 0, 0, 0.1], [1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]);
+    assert.deepEqual(rows.map((row) => row.compat_weight_source), ['original', 'audit', 'audit']);
+    MIGRATIONS.at(-1)(db);
+    assert.deepEqual(db.prepare("SELECT compat_weight_source FROM votes ORDER BY created_at").all().map((row) => row.compat_weight_source),
+      ['original', 'audit', 'audit']);
+  } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test('countedVotes only feeds source=arena votes to Bradley–Terry', () => {
   const db = openDatabase(':memory:');
   try {
@@ -189,7 +220,7 @@ describe('show1 compat endpoints', () => {
     assert.deepEqual((await call(base, 'GET', '/api/works')).data, before.data);
   }));
 
-  test('editorial weights re-weight vote promptWeights (radar replay follows current weights)', () => withServer({
+test('snapshot vote weights stay fixed after editorial changes', () => withServer({
     snapshot: fixtureSnapshot({ entertainment: [
       { id: 'sv1', promptId: '001', winnerRid: '001-a', winnerMid: 'model-a', loserRid: '001-b', loserMid: 'model-b', mode: 'blind', ts: 1, outcome: 'win', winnerName: 'Model A', loserName: 'Model B', promptKind: 'web', promptWeights: [0.3, 0, 0.6, 0, 0, 0.1] },
     ], formal: [] }),
@@ -199,12 +230,52 @@ describe('show1 compat endpoints', () => {
     db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
       VALUES (?, 'arena', ?, ?, 'admin', ?)`).run('show1-001', '', JSON.stringify([0, 0, 0, 0.5, 0.5, 0]), Date.now());
     const after = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes[0];
-    assert.deepEqual(after.promptWeights, [0, 0, 0, 0.5, 0.5, 0]);
+    assert.deepEqual(after.promptWeights, [0.3, 0, 0.6, 0, 0, 0.1]);
     // 另一道题没有覆盖，权重保持快照值
     db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
       VALUES (?, 'arena', ?, ?, 'admin', ?)`).run('chinese-architecture', '', JSON.stringify([1, 0, 0, 0, 0, 0]), Date.now());
     const still = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes[0];
-    assert.deepEqual(still.promptWeights, [0, 0, 0, 0.5, 0.5, 0]);
+    assert.deepEqual(still.promptWeights, [0.3, 0, 0.6, 0, 0, 0.1]);
+  }));
+
+  test('a verified arena upload joins the Show1 list and entertainment votes', () => withServer({}, async ({ db, auth, base }) => {
+    seedWorks(db);
+    const columns = db.prepare('PRAGMA table_info(works)').all().map((column) => column.name);
+    db.exec(`INSERT INTO works (${columns.join(', ')}) SELECT ${columns.map((name) => ({
+      id: "'up-live0001'", content_key: "'wlive'", digest: "'dlive'", show_arena: '1',
+    })[name] ?? name).join(', ')} FROM works WHERE id = 'up-cccc0003'`);
+    const works = (await call(base, 'GET', '/api/works')).data.works;
+    const live = works.find((work) => work.id === 'up-live0001');
+    assert.deepEqual(Object.keys(live).sort(), Object.keys(works[0]).sort());
+    assert.deepEqual(JSON.parse(live.content), { kind: 'html', src: 'https://wlive.works.test/' });
+    assert.equal(live.promptId, '004');
+    assert.equal(works.length, 5);
+    const voter = signIn(auth, 'live-voter');
+    const result = await call(base, 'POST', '/api/votes', { cookie: voter.cookie, body: { id: randomUUID(),
+      promptId: '004', winnerRid: live.id, winnerMid: live.modelId,
+      loserRid: '004-pagoda', loserMid: 'model-d', mode: 'blind' } });
+    assert.equal(result.status, 201, result.text);
+    assert.equal((await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes.at(-1).winnerRid, live.id);
+    db.prepare("UPDATE works SET show_arena = 0 WHERE id = 'up-live0001'").run();
+    assert.equal((await call(base, 'GET', '/api/works')).data.works.some((work) => work.id === live.id), false);
+  }));
+
+  test('live votes retain different weights saved between editorial changes', () => withServer({}, async ({ db, auth, base }) => {
+    const save = (weights) => db.prepare(`INSERT INTO task_editorial (task_id, face, commentary, weights_json, updated_by, updated_at)
+      VALUES ('show1-001', 'arena', '', ?, 'admin', ?) ON CONFLICT(task_id, face) DO UPDATE SET
+      weights_json = excluded.weights_json, updated_at = excluded.updated_at`).run(JSON.stringify(weights), Date.now());
+    const firstWeights = [1, 0, 0, 0, 0, 0];
+    const secondWeights = [0, 1, 0, 0, 0, 0];
+    save(firstWeights);
+    const first = await call(base, 'POST', '/api/votes', { cookie: signIn(auth, 'first').cookie, body: { id: randomUUID(), ...BALLOT } });
+    assert.equal(first.status, 201);
+    save(secondWeights);
+    const second = await call(base, 'POST', '/api/votes', { cookie: signIn(auth, 'second').cookie, body: { id: randomUUID(), ...BALLOT } });
+    assert.equal(second.status, 201);
+    save([0, 0, 1, 0, 0, 0]);
+    const votes = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes;
+    assert.deepEqual(votes.map((vote) => vote.promptWeights), [firstWeights, secondWeights]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM votes WHERE compat_weight_source = 'cast'").get().n, 2);
   }));
 
   test('POST /api/votes enforces the old validation, dedup and storage rules', () => withServer({}, async ({ db, auth, base }) => {

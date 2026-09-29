@@ -1,6 +1,6 @@
 // SQLite through Node's built-in driver (Node ≥ 22.13). Schema changes are appended to
 // MIGRATIONS and applied in order, tracked by PRAGMA user_version.
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -231,6 +231,30 @@ const MIGRATIONS = [
         PRIMARY KEY (purpose, email_hash)
       );
       CREATE INDEX IF NOT EXISTS email_codes_expiry ON email_codes(expires_at);`);
+  },
+  (db) => {
+    const columns = new Set(db.prepare('PRAGMA table_info(votes)').all().map((column) => column.name));
+    if (!columns.has('compat_weights_json')) db.exec('ALTER TABLE votes ADD COLUMN compat_weights_json TEXT');
+    if (!columns.has('compat_weight_source')) db.exec('ALTER TABLE votes ADD COLUMN compat_weight_source TEXT');
+    if (!['source', 'task_id', 'created_at'].every((column) => columns.has(column))) return;
+    const snapshot = JSON.parse(readFileSync(new URL('./show1/compat-data.json', import.meta.url), 'utf8'));
+    const defaults = new Map(snapshot.prompts.map((prompt) => [snapshot.taskByRound[prompt.id], prompt.weights ?? null]));
+    const history = new Map();
+    const audits = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit'").get()
+      ? db.prepare("SELECT task_id, at, id, detail FROM audit WHERE action = 'editorial' ORDER BY at, id").all() : [];
+    for (const row of audits) {
+      let detail;
+      try { detail = JSON.parse(row.detail); } catch { continue; }
+      if (detail?.face !== 'arena' || !Array.isArray(detail.weights)) continue;
+      if (!history.has(row.task_id)) history.set(row.task_id, []);
+      history.get(row.task_id).push({ at: row.at, weights: detail.weights });
+    }
+    const save = db.prepare('UPDATE votes SET compat_weights_json = ?, compat_weight_source = ? WHERE id = ?');
+    for (const vote of db.prepare("SELECT id, task_id, created_at FROM votes WHERE source = 'show1' AND compat_weights_json IS NULL").all()) {
+      const audit = history.get(vote.task_id)?.filter((entry) => entry.at <= vote.created_at).at(-1);
+      const weights = audit?.weights ?? defaults.get(vote.task_id);
+      if (weights) save.run(JSON.stringify(weights), audit ? 'audit' : 'original', vote.id);
+    }
   },
 ];
 

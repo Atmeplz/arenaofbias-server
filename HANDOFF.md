@@ -1,5 +1,11 @@
 # HANDOFF.md · 当前状态
 
+## 2026-09-29 · fix-round2（待 PR 审阅，未部署）
+
+- SH-01 后台重置邮件纳入关停等待，与 HTTP 请求共用进程级 10 秒上限；R01 将已核验且 `show_arena=1` 的新投稿增量并入 Show1 `/api/works` 与兼容投票清单；R07 追加投票权重迁移，旧 live 票按先前最近的竞技场 editorial audit 还原，否则用原题权重，今后投票即保存权重。
+- DP-07 自动接管要求提名、题目及导出源 digest 一致，不符只记 `curate-reject` 审计。依赖数据仓 PR #1 的 `sourceDigest`。C-08 Windows junction 切换失败恢复旧链接；DP-03 激活成功后才原子写 pin；DP-04 新数据库快照成功生成后才替换旧 staging 文件。
+- data PR #1 合并后 `datapack/f0b466a14bc3c16d578d8ac76f9287fa57f4283d` 发布产物 `574b17e006ef2955b8b4a267192828e2aa63d7f8`；本分支 pin 已更新。datapack-client 下载、校验、隔离目录激活通过；`npm run check` 47 文件 0 错，`npm test` 104/104。`output/audit/round2.md` 与 `output/audit/beta-repair.md` 仅保留本地，不入库。当前本地数据库 v13 无 Show1 live 票，生产回填数量待部署时统计。未部署、不合并、不推 main；须与画廊 PR #3 同时部署。
+
 ## 2026-09-29 · share-v2（待 PR 审阅，未部署）
 
 - 从 `origin/main@360ec7a` 建立，已 rebase 到 `origin/main@2dfd952`（含 fix-round1）。删除 Show1 兼容层四条分享 501 占位路由；Show1 与 Show2 前端已确认不再调用。无 npm 依赖、无数据库迁移。
