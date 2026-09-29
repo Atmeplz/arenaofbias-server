@@ -1,5 +1,7 @@
 # arenaofbias-server
 
+生产部署、差异数据包和回滚步骤见 [部署文档](docs/deploy.md)。
+
 Show1×Show2 融合工程的**共享后端**：整个体系中唯一的动态服务，独占数据库，负责账号、投票、排行榜、投稿审核与作品沙盒伺服。两个前端（画廊/平台 UI）各自独立部署，全部通过本服务的 HTTP API 读写数据。本仓库**不含任何前端页面**。
 
 - 纯 Node.js（>= 22.13），**零依赖**（无 dependencies / devDependencies，无需 `npm install`）。
@@ -36,7 +38,7 @@ $env:CAPTURE = '0'
 npm start
 ```
 
-前端独立启动，并将画廊的 `API_BASE_URL` 设置为 `http://localhost:5190/api/`（包含 `/api/`）；`CAPTURE=0` 只用于不验自动截图的本地联调。`CONTENT_ORIGIN_TEMPLATE` 默认随 `CONTENT_PORT` 生成 `http://{token}.localhost:5191`。生产部署按实际 HTTPS 域名设置这些变量，并由代理提供作品源泛域名。
+前端独立启动，并将画廊的 `API_BASE_URL` 设置为 `http://localhost:5190/api/`（包含 `/api/`）；`CAPTURE=0` 时截图队列不启动、不处理投稿截图，只适用于不验自动截图的联调或明确接受无自动截图的部署。`CONTENT_ORIGIN_TEMPLATE` 默认随 `CONTENT_PORT` 生成 `http://{token}.localhost:5191`。生产部署按实际 HTTPS 域名设置这些变量，并由代理提供作品源泛域名。
 
 数据包更新可不重启：安装后原子切换 `DIST_DIR` 所指链接，服务按真实目录和 `.datapack-source.json` 中的**产物** commit 加载。`data.json.sourceCommit` 是不同的**源码**提交。对局持久保存真实版本目录，HTML 与后续资源固定到该目录；新对局使用新版。普通目录不能原地覆盖，修改进程环境变量也不会自动切换运行中的服务。Windows/文件系统不支持原子替换链接时，切换命令保留旧链接并报错，应停服后人工切换。
 
@@ -61,7 +63,7 @@ npm start
 | `CONTENT_CDN_ALLOWLIST` | `cdn.jsdelivr.net,unpkg.com,cdnjs.cloudflare.com,esm.sh,fonts.googleapis.com,fonts.gstatic.com` | 作品允许加载脚本/样式/字体/数据的公共 CDN 白名单 |
 | `CAPTURE` | 开（`0` 关闭） | 投稿作品的无头截图（Playwright + 本地 Chrome） |
 | `CAPTURE_BROWSER` | `chrome` | 截图所用浏览器通道 |
-| `COOKIE_SECURE` | 关（`1` 开启） | session cookie 加 Secure 标记 |
+| `COOKIE_SECURE` | 关（`1` 开启） | session cookie 改名 `__Host-sp_session`，加 Secure 标记，Path=/ 且不带 Domain；本地未开启时仍为 `sp_session` |
 | `COOKIE_SAME_SITE` | `Lax` | `Lax` / `Strict` / `None`；跨站 HTTPS 部署用 `None`，并必须开启 `COOKIE_SECURE=1` |
 | `TRUST_PROXY` | 关（`1` 开启） | 信任反向代理的客户端 IP 头 |
 | `SERVER_VERSION` | Git HEAD 或 `dev` | 启动时确定的服务端版本，返回在 bootstrap 中 |

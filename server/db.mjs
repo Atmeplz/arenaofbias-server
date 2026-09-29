@@ -256,6 +256,23 @@ const MIGRATIONS = [
       if (weights) save.run(JSON.stringify(weights), audit ? 'audit' : 'original', vote.id);
     }
   },
+  (db) => {
+    const columns = new Set(db.prepare('PRAGMA table_info(guess_results)').all().map((column) => column.name));
+    if (!columns.has('superseded')) db.exec('ALTER TABLE guess_results ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0');
+    db.exec(`CREATE TABLE IF NOT EXISTS guess_day_salts (day_key TEXT PRIMARY KEY, salt TEXT NOT NULL);
+      UPDATE guess_results AS result SET superseded = 1
+      WHERE superseded = 0 AND EXISTS (
+        SELECT 1 FROM guess_results AS earlier
+        WHERE earlier.day_key = result.day_key
+        AND ((result.ip_hash IS NOT NULL AND earlier.ip_hash = result.ip_hash)
+          OR (result.user_id IS NOT NULL AND earlier.user_id = result.user_id))
+        AND (COALESCE(earlier.created_at, -9223372036854775808) < COALESCE(result.created_at, -9223372036854775808)
+          OR (COALESCE(earlier.created_at, -9223372036854775808) = COALESCE(result.created_at, -9223372036854775808)
+            AND earlier.id < result.id))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS guess_result_ip_day ON guess_results(day_key, ip_hash) WHERE superseded = 0;
+      CREATE UNIQUE INDEX IF NOT EXISTS guess_result_user_day ON guess_results(day_key, user_id) WHERE superseded = 0 AND user_id IS NOT NULL;`);
+  },
 ];
 
 // Exported so tests can build databases at an intermediate schema version.

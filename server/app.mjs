@@ -82,7 +82,7 @@ export function createPlatform({ config, limits }) {
     return snapshot;
   };
 
-  function bootstrap(user) {
+  async function bootstrap(user) {
     const snapshot = catalog.snapshot();
     const uploads = library.uploads();
     return {
@@ -103,7 +103,7 @@ export function createPlatform({ config, limits }) {
       questions: questions.all(),
       reactions: library.reactionSummary(user),
       arena: Object.fromEntries(catalog.tasks().map((task) => [task.id, { ...arena.poolStats(task.id), uploads: task.acceptsUploads }])),
-      totals: arena.leaderboard().totals,
+      totals: (await arena.leaderboard()).totals,
       me: user ? { votes: arena.votesBy(user.id), pending: library.pendingCount(user.id) } : null,
       review: user?.role === 'admin' ? { unverified: uploads.filter((work) => work.status === 'unverified').length } : null,
     };
@@ -123,14 +123,14 @@ export function createPlatform({ config, limits }) {
     limit.auth(ctx.ip);
     const body = await readJson(ctx.req);
     await emailAuth.gate(body.turnstileToken, ctx.ip);
-    const user = auth.register(body.name ?? body.username, body.password);
+    const user = await auth.register(body.name ?? body.username, body.password);
     auth.startSession(ctx.res, user.id);
     return { user: compatUser(user) };
   });
   router.on('POST', '/api/auth/login', async (ctx) => {
     limit.auth(ctx.ip);
     const body = await readJson(ctx.req);
-    const user = auth.login(body.name ?? body.username, body.password);
+    const user = await auth.login(body.name ?? body.username, body.password);
     auth.startSession(ctx.res, user.id);
     return { user: compatUser(user) };
   });

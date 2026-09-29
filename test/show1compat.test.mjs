@@ -73,8 +73,17 @@ function createFixture({ snapshot = fixtureSnapshot(), admins = ['root'] } = {})
 
 async function withServer(options, run) {
   const { db, auth, server } = createFixture(options);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  let base;
+  // Windows may assign a port that fetch refuses under the browser unsafe-port list.
+  for (;;) {
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+    try { await fetch(`${base}/__port_probe`); break; }
+    catch (error) {
+      await new Promise((resolve) => server.close(resolve));
+      if (error?.cause?.message !== 'bad port') throw error;
+    }
+  }
   try {
     await run({ db, auth, base });
   } finally {
@@ -97,8 +106,8 @@ async function call(base, method, path, { body, cookie, raw = false } = {}) {
   return { status: response.status, text, data };
 }
 
-function signIn(auth, name) {
-  const user = name === 'root' ? auth.createAdmin(name, 'correct horse') : auth.register(name, 'correct horse');
+async function signIn(auth, name) {
+  const user = name === 'root' ? auth.createAdmin(name, 'correct horse') : await auth.register(name, 'correct horse');
   const headers = new Map();
   auth.startSession({ setHeader: (key, value) => headers.set(key, value) }, user.id);
   return { cookie: headers.get('Set-Cookie').split(';')[0], user };
@@ -147,11 +156,11 @@ test('weight migration restores prior arena audit weights and falls back to orig
   const file = join(root, 'platform.db');
   const old = new DatabaseSync(file);
   try {
-    for (const step of MIGRATIONS.slice(0, -1)) {
+    for (const step of MIGRATIONS.slice(0, -2)) {
       if (typeof step === 'function') step(old);
       else old.exec(step);
     }
-    old.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+    old.exec(`PRAGMA user_version = ${MIGRATIONS.length - 2}`);
     const add = old.prepare(`INSERT INTO votes (id, match_id, task_id, a_work, b_work, pair_key, choice,
       created_at, a_identity, b_identity, identity_source, source) VALUES (?, ?, 'show1-001', 'a', 'b', ?, 'a', ?, '{}', '{}', 'snapshot', 'show1')`);
     add.run('before', 'm-before', 'p-before', 10);
@@ -167,13 +176,13 @@ test('weight migration restores prior arena audit weights and falls back to orig
     assert.deepEqual(rows.map((row) => JSON.parse(row.compat_weights_json)),
       [[0.3, 0, 0.6, 0, 0, 0.1], [1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]);
     assert.deepEqual(rows.map((row) => row.compat_weight_source), ['original', 'audit', 'audit']);
-    MIGRATIONS.at(-1)(db);
+    MIGRATIONS.at(-2)(db);
     assert.deepEqual(db.prepare("SELECT compat_weight_source FROM votes ORDER BY created_at").all().map((row) => row.compat_weight_source),
       ['original', 'audit', 'audit']);
   } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test('countedVotes only feeds source=arena votes to Bradley–Terry', () => {
+test('countedVotes only feeds source=arena votes to Bradley–Terry', async () => {
   const db = openDatabase(':memory:');
   try {
     const catalog = {
@@ -193,7 +202,7 @@ test('countedVotes only feeds source=arena votes to Bradley–Terry', () => {
     add.run('v-arena', 'ma', 'one:w1+w2', identity('w1'), identity('w2'), 'snapshot', 'arena', null);
     add.run('v-legacy', 'mb', 'one:w1+w2x', identity('w1'), identity('w2'), 'legacy', 'legacy', null);
     add.run('v-show1', 'mc', 'show1:0:w1+w2', identity('w1'), identity('w2'), 'snapshot', 'show1', 'blind');
-    const board = arena.leaderboard({ task: 'one' });
+    const board = await arena.leaderboard({ task: 'one' });
     assert.equal(board.totals.votes, 1, 'legacy and show1 votes never enter Bradley–Terry');
   } finally { db.close(); }
 });
@@ -250,7 +259,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.deepEqual(JSON.parse(live.content), { kind: 'html', src: 'https://wlive.works.test/' });
     assert.equal(live.promptId, '004');
     assert.equal(works.length, 5);
-    const voter = signIn(auth, 'live-voter');
+    const voter = await signIn(auth, 'live-voter');
     const result = await call(base, 'POST', '/api/votes', { cookie: voter.cookie, body: { id: randomUUID(),
       promptId: '004', winnerRid: live.id, winnerMid: live.modelId,
       loserRid: '004-pagoda', loserMid: 'model-d', mode: 'blind' } });
@@ -267,10 +276,10 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     const firstWeights = [1, 0, 0, 0, 0, 0];
     const secondWeights = [0, 1, 0, 0, 0, 0];
     save(firstWeights);
-    const first = await call(base, 'POST', '/api/votes', { cookie: signIn(auth, 'first').cookie, body: { id: randomUUID(), ...BALLOT } });
+    const first = await call(base, 'POST', '/api/votes', { cookie: (await signIn(auth, 'first')).cookie, body: { id: randomUUID(), ...BALLOT } });
     assert.equal(first.status, 201);
     save(secondWeights);
-    const second = await call(base, 'POST', '/api/votes', { cookie: signIn(auth, 'second').cookie, body: { id: randomUUID(), ...BALLOT } });
+    const second = await call(base, 'POST', '/api/votes', { cookie: (await signIn(auth, 'second')).cookie, body: { id: randomUUID(), ...BALLOT } });
     assert.equal(second.status, 201);
     save([0, 0, 1, 0, 0, 0]);
     const votes = (await call(base, 'GET', '/api/votes?scope=entertainment')).data.votes;
@@ -285,7 +294,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.equal(anonymous.status, 401);
     assert.equal(anonymous.data.error, '请先登录再投票。');
 
-    const voter = signIn(auth, 'voter');
+    const voter = await signIn(auth, 'voter');
     assert.equal((await vote(voter, { id: 'nope', ...BALLOT })).status, 400);
     assert.equal((await vote(voter, { id: randomUUID(), ...BALLOT, promptId: '999' })).data.error, '题目不存在');
     assert.equal((await vote(voter, { id: randomUUID(), ...BALLOT, winnerMid: 'model-x' })).status, 400);
@@ -344,7 +353,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.equal((await vote(voter, { id: randomUUID(), ...BALLOT, winnerRid: '001-b', winnerMid: 'model-b', loserRid: '001-a', loserMid: 'model-a' })).data.code, 'pair');
 
     // Winner on side b: another voter backs 001-b; a/b stay in rid order → choice 'b'.
-    const other = signIn(auth, 'voter2');
+    const other = await signIn(auth, 'voter2');
     const idB = randomUUID();
     const createdB = await vote(other, { id: idB, ...BALLOT, winnerRid: '001-b', winnerMid: 'model-b', loserRid: '001-a', loserMid: 'model-a' });
     assert.equal(createdB.status, 201);
@@ -364,7 +373,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.equal(drawRow.compat_mode, 'party');
 
     // Formal votes by an admin carry the formal scope bit in the pair key.
-    const admin = signIn(auth, 'root');
+    const admin = await signIn(auth, 'root');
     const idFormal = randomUUID();
     const formalVote = await vote(admin, { id: idFormal, ...BALLOT, mode: 'formal' });
     assert.equal(formalVote.status, 201);
@@ -372,7 +381,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
   }));
 
   test('a migrated legacy vote (bare pair_key) still blocks re-voting the same pair', () => withServer({}, async ({ db, auth, base }) => {
-    const voter = signIn(auth, 'legacyvoter');
+    const voter = await signIn(auth, 'legacyvoter');
     db.prepare(`INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice,
       created_at, a_identity, b_identity, identity_source) VALUES ('old-vote', 'old-match', ?, 'show1-001',
       'legacy:model-a', 'legacy:model-b', '001-a+001-b', 'a', 1, 'model-a', 'model-b', 'legacy')`).run(voter.user.id);
@@ -400,10 +409,10 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.equal((await call(base, 'GET', '/api/votes?scope=nonsense')).data.error, '测评数据范围无效');
     assert.equal((await call(base, 'GET', '/api/votes')).status, 400);
 
-    const voter = signIn(auth, 'merger');
+    const voter = await signIn(auth, 'merger');
     const liveId = randomUUID();
     assert.equal((await call(base, 'POST', '/api/votes', { body: { id: liveId, ...BALLOT }, cookie: voter.cookie })).status, 201);
-    const admin = signIn(auth, 'root');
+    const admin = await signIn(auth, 'root');
     const liveFormal = randomUUID();
     assert.equal((await call(base, 'POST', '/api/votes', { body: { id: liveFormal, ...BALLOT, mode: 'formal' }, cookie: admin.cookie })).status, 201);
 
@@ -454,7 +463,7 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
 
   test('GET /api/comments maps rounds to tasks; POST resolves the backed side work', () => withServer({}, async ({ db, auth, base }) => {
     seedWorks(db);
-    const author = signIn(auth, 'commenter');
+    const author = await signIn(auth, 'commenter');
     const insert = db.prepare('INSERT INTO comments (id, task_id, work_id, user_id, body, created_at, side, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
     insert.run('c-new', 'chinese-architecture', 'up-cccc0003', author.user.id, '新的', 200, 'a', null);
     insert.run('c-old', 'chinese-architecture', 'up-cccc0003', null, '旧的', 100, null, null);
@@ -506,13 +515,13 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
     assert.equal(conflict.data.error, '留言编号冲突，请重新提交');
 
     // No votes at all → fall back to the task's first work by rid.
-    const fresh = signIn(auth, 'fresh');
+    const fresh = await signIn(auth, 'fresh');
     const fallbackId = randomUUID();
     assert.equal((await comment(fresh, { id: fallbackId, roundId: '001', side: 'a', body: '第一' })).status, 201);
     assert.equal(db.prepare('SELECT work_id FROM comments WHERE id = ?').get(fallbackId).work_id, 'up-aaaa0001');
 
     // A legacy migrated vote resolves its mid from the legacy:<mid> work reference.
-    const legacy = signIn(auth, 'legacyvoter');
+    const legacy = await signIn(auth, 'legacyvoter');
     db.prepare(`INSERT INTO votes (id, match_id, user_id, task_id, a_work, b_work, pair_key, choice, created_at,
       a_identity, b_identity, identity_source, source) VALUES ('lv1', 'lm1', ?, 'show1-001', 'legacy:model-b', 'legacy:model-a',
       '001-a+001-b', 'a', 50, 'model-b', 'model-a', 'legacy', 'legacy')`).run(legacy.user.id);
@@ -524,8 +533,8 @@ test('snapshot vote weights stay fixed after editorial changes', () => withServe
   test('reactions set, switch and cancel per slot with counts and mine', () => withServer({}, async ({ db, auth, base }) => {
     assert.equal((await call(base, 'GET', '/api/reactions?prompt=999')).status, 400);
     const react = (who, body) => call(base, 'POST', '/api/reactions', { body, cookie: who?.cookie });
-    const one = signIn(auth, 'one');
-    const two = signIn(auth, 'two');
+    const one = await signIn(auth, 'one');
+    const two = await signIn(auth, 'two');
     const base1 = { promptId: '001', mid: 'model-a' };
 
     assert.equal((await react(null, { id: randomUUID(), ...base1, kind: 'up' })).status, 401);
