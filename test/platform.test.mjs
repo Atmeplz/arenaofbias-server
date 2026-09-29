@@ -319,6 +319,13 @@ describe('platform lifecycle', () => {
     assert.equal((await fetch(`${base}/api/me`, { method: 'OPTIONS', headers: { origin: 'https://evil.example', 'Access-Control-Request-Method': 'PATCH' } })).status, 403);
   });
 
+  test('trusted origins can read the stale datapack response header', async () => {
+    const trusted = await fetch(`${base}/api/bootstrap`, { headers: { origin: 'http://127.0.0.1' } });
+    assert.equal(trusted.headers.get('access-control-expose-headers'), 'X-Datapack-Stale');
+    const foreign = await fetch(`${base}/api/bootstrap`, { headers: { origin: 'https://evil.example' } });
+    assert.equal(foreign.headers.get('access-control-expose-headers'), null);
+  });
+
   let upload;
   test('uploads are staged, trial-loaded with the probe, then submitted as unverified', async () => {
     const html = '<!doctype html><html><head><title>mine</title></head><body><h1>mine</h1></body></html>';

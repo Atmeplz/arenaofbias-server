@@ -635,12 +635,27 @@ function uploadView() {
 const WORKS_FILTERS = { all: '全部', unverified: '未验证', verified: '已验证', questioned: '存疑' };
 const faceLabel = () => state.system === 'gallery' ? '展览馆' : '竞技场';
 const workKey = (w) => `${encodeURIComponent(w.task)}/${encodeURIComponent(w.id)}`;
+function updateBulkSelection() {
+  const results = $('.work-results', app());
+  if (!results) return;
+  const inputs = $$('[data-select-work]:not(:disabled)', results);
+  const selected = inputs.filter((input) => input.checked).length;
+  const all = $('[data-select-all]', results);
+  if (all) {
+    all.checked = inputs.length > 0 && selected === inputs.length;
+    all.indeterminate = selected > 0 && selected < inputs.length;
+  }
+  const count = $('[data-bulk-count]', results);
+  if (count) count.textContent = `已选 ${selected} 件（本页）`;
+  $$('[data-bulk-face]', results).forEach((button) => { button.disabled = selected === 0; });
+}
 function adminWorkRow(w, face = state.system) {
   const label = face === 'gallery' ? '展览馆' : '竞技场';
   const datapackTasks = new Set((state.data?.tasks ?? []).map((t) => t.id));
   const curable = w.source === 'upload' && w.status === 'verified' && !w.curatedAs && datapackTasks.has(w.task);
   const promoted = Boolean(w.curatedAs);
   return `<tr data-work-key="${esc(`${w.task}/${w.id}`)}">
+    <td><input type="checkbox" data-select-work="${esc(`${w.task}/${w.id}`)}" aria-label="选择${esc(w.title)}" ${promoted ? 'disabled' : ''}></td>
     <td><div class="admin-work-title">${thumb(w)}<div><b>${esc(w.title)}</b><small>${esc(taskTitle(w.task))}</small></div></div></td>
     <td>${esc(w.modelName)}</td><td>${w.source === 'curated' ? '精选' : '投稿'}</td><td>${statusBadge(w.status)}</td>
     ${promoted ? `<td><span class="badge" title="已提交收录到 arenaofbias-data 的 intake 分支，等人工合并发布后成为馆藏">收录中</span></td>`
@@ -663,7 +678,7 @@ function systemWorksView() {
       <select class="input" name="status" aria-label="筛选状态"><option value="">全部状态</option>${Object.entries(WORKS_FILTERS).filter(([id]) => id !== 'all').map(([id, label]) => `<option value="${id}" ${state.workStatus === id ? 'selected' : ''}>${label}</option>`).join('')}</select>
       <select class="input" name="show" aria-label="筛选开关"><option value="">全部开关</option><option value="on" ${state.workShow === 'on' ? 'selected' : ''}>已开启</option><option value="off" ${state.workShow === 'off' ? 'selected' : ''}>已关闭</option></select>
       <button class="btn" type="submit">筛选</button></form>
-      <div class="work-results" aria-busy="${state.workLoading}">${state.workLoading ? skeleton(7) : rows ? `<div class="table-wrap"><table class="board admin-work-table"><thead><tr><th>作品</th><th>模型</th><th>来源</th><th>状态</th><th>${face === 'arena' ? '正式盲测' : `${faceLabel()}开关`}</th><th>${face === 'arena' ? '正式盲测池' : '备注'}</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="board-empty">没有符合条件的作品。</p>'}</div>
+      <div class="work-results" aria-busy="${state.workLoading}">${state.workLoading ? skeleton(7) : rows ? `<div class="admin-bulk"><span data-bulk-count>已选 0 件（本页）</span><button class="btn sm" data-bulk-face="on" disabled>批量开启${faceLabel()}</button><button class="btn sm" data-bulk-face="off" disabled>批量关闭${faceLabel()}</button></div><div class="table-wrap"><table class="board admin-work-table"><thead><tr><th><input type="checkbox" data-select-all aria-label="选择本页全部作品"></th><th>作品</th><th>模型</th><th>来源</th><th>状态</th><th>${face === 'arena' ? '正式盲测' : `${faceLabel()}开关`}</th><th>${face === 'arena' ? '正式盲测池' : '备注'}</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="board-empty">没有符合条件的作品。</p>'}</div>
       <div class="admin-pagination"><button class="btn sm" data-page="${state.workPage - 1}" ${state.workPage <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${state.workPage} / ${pages} 页</span><button class="btn sm" data-page="${state.workPage + 1}" ${state.workPage >= pages ? 'disabled' : ''}>下一页</button></div>
     </section>`;
 }
@@ -1008,6 +1023,7 @@ function render({ soft = false, world = false } = {}) {
     renderedContent = content;
   }
   document.title = `${route === 'guess' ? '模一把' : route === 'activity' ? '活动管理' : tabsForSystem().find((tab) => tab.id === route)?.label ?? '管理后台'} · 管理后台`;
+  if (route === 'works') updateBulkSelection();
   syncThemeUi();
 }
 
@@ -1083,6 +1099,24 @@ document.addEventListener('click', async (e) => {
   }
   const page = e.target.closest('[data-page]');
   if (page && !page.disabled) { state.workPage = Number(page.dataset.page); syncWorksHash(); await reload({ navigation: true }); return; }
+  const bulk = e.target.closest('[data-bulk-face]');
+  if (bulk && !bulk.disabled) {
+    const keys = new Set($$('[data-select-work]:checked', $('.work-results', app())).map((input) => input.dataset.selectWork));
+    const works = state.adminWorks.filter((work) => keys.has(`${work.task}/${work.id}`));
+    if (!works.length || !await confirmDialog({ title: `批量${bulk.dataset.bulkFace === 'on' ? '开启' : '关闭'}${faceLabel()}？`,
+      message: `将修改本页选中的 ${works.length} 件作品。`, confirm: '确认修改' })) return;
+    const done = busy(bulk, '正在保存…');
+    try {
+      await api('admin/works/batch-face-settings', { method: 'POST', body: {
+        works: works.map(({ task, id }) => ({ task, id })), [`show_${state.system}`]: bulk.dataset.bulkFace === 'on' } });
+      $$('[data-select-work]:checked', $('.work-results', app())).forEach((input) => { input.checked = false; });
+      state.workCache.clear();
+      toast(`已更新 ${works.length} 件作品`);
+      await reload();
+    } catch (error) { toast(error.message); }
+    finally { done(); updateBulkSelection(); }
+    return;
+  }
   const calibrate = e.target.closest('[data-calibrate]');
   if (calibrate) { const w = state.adminWorks.find((item) => item.id === calibrate.dataset.calibrate); if (w) calibrationDialog(w); return; }
   const editBtn = e.target.closest('[data-edit]');
@@ -1196,6 +1230,13 @@ document.addEventListener('click', async (e) => {
   }
 });
 document.addEventListener('change', async (e) => {
+  const selectAll = e.target.closest('[data-select-all]');
+  if (selectAll) {
+    $$('[data-select-work]:not(:disabled)', $('.work-results', app())).forEach((input) => { input.checked = selectAll.checked; });
+    updateBulkSelection();
+    return;
+  }
+  if (e.target.closest('[data-select-work]')) { updateBulkSelection(); return; }
   const input = e.target.closest('[data-inbox-input]');
   if (input) {
     if (input.files.length) await inboxUpload(input.files);

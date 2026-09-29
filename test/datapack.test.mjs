@@ -115,8 +115,9 @@ test('a match keeps its original package and vote identity across a same-mtime s
       const stale = await fetch(`${base}/api/arena/matches`, { method: 'POST', headers: {
         Origin: 'http://localhost', 'Content-Type': 'application/json', 'X-Datapack-Version': SHA_A,
       }, body: '{"task":"one"}' });
-      assert.equal(stale.status, 409);
-      assert.equal((await stale.json()).code, 'datapack_mismatch');
+      assert.equal(stale.status, 200);
+      assert.equal(stale.headers.get('x-datapack-stale'), '1');
+      assert.equal((await stale.json()).task, 'one');
     } finally { await new Promise((resolve) => site.close(resolve)); }
 
     const admin = platform.auth.promote('voter', 'admin');

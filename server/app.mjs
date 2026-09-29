@@ -72,7 +72,7 @@ export function createPlatform({ config, limits }) {
     const snapshot = catalog.snapshot();
     if (!snapshot.task(taskId)) return snapshot; // Community questions are independent of the curated package.
     const supplied = ctx.req.headers['x-datapack-version'];
-    if (supplied && supplied !== snapshot.commit) fail(409, '馆藏版本已更新，请刷新页面后重试', 'datapack_mismatch');
+    if (supplied && supplied !== snapshot.commit) ctx.res.setHeader('X-Datapack-Stale', '1');
     return snapshot;
   };
 
@@ -245,6 +245,14 @@ export function createPlatform({ config, limits }) {
     adminOnly(ctx);
     return adminService.works(ctx.url.searchParams);
   });
+  router.on('POST', '/api/admin/works/batch-face-settings', async (ctx) => {
+    const admin = adminOnly(ctx);
+    limit.write(admin.id);
+    const { works: items, ...settings } = (await readJson(ctx.req)) ?? {};
+    const works = library.batchSetFaceSettings(admin, items, settings);
+    arena.invalidate();
+    return { works };
+  });
   router.on('POST', '/api/admin/works/:task/:id/face-settings', async (ctx) => {
     const admin = adminOnly(ctx);
     limit.write(admin.id);
@@ -415,6 +423,7 @@ export function createPlatform({ config, limits }) {
         if (isTrustedOrigin(req, config)) {
           res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
           res.setHeader('Access-Control-Allow-Credentials', 'true');
+          res.setHeader('Access-Control-Expose-Headers', 'X-Datapack-Stale');
         }
       }
       if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
