@@ -41,17 +41,18 @@ export function createPlatform({ config, limits }) {
   const library = createLibrary({ db, catalog, config, limits });
   const adminService = createAdmin({ db, catalog, library });
   const inbox = createInbox({ library, config, limits });
-  const curator = createCurator({ db, catalog, library, config });
+  const arena = createArena({ db, catalog, library, limits });
+  const curator = createCurator({ db, catalog, library, onTakeover: () => arena.invalidate() });
   catalog.onChange(curator.takeover);
   const comments = createComments(db, library);
-  const arena = createArena({ db, catalog, library, limits });
   const capturer = createCapturer({ config, library });
   const limit = {
     auth: rateLimit(60e3, 10, '尝试次数太多，请一分钟后再试'),
     write: rateLimit(60e3, 120),
     drafts: rateLimit(10 * 60e3, 12, '上传太频繁，请稍后再试'),
     matches: rateLimit(60e3, 60),
-    export: rateLimit(60e3, 120),
+    exportToken: rateLimit(60e3, 2000),
+    exportIp: rateLimit(60e3, 10000),
   };
   const siteCsp = [
     "default-src 'self'",
@@ -275,8 +276,9 @@ export function createPlatform({ config, limits }) {
     const admin = adminOnly(ctx);
     limit.write(admin.id);
     const body = await readJson(ctx.req);
-    return { task: ctx.params.task, id: ctx.params.id, face: body.face,
-      calibration: library.setFaceCalibration(admin, ctx.params.task, ctx.params.id, body.face, body.calibration) };
+    const calibration = library.setFaceCalibration(admin, ctx.params.task, ctx.params.id, body.face, body.calibration);
+    arena.invalidate();
+    return { task: ctx.params.task, id: ctx.params.id, face: body.face, calibration };
   });
   router.on('GET', '/api/admin/tasks/:id/editorial', (ctx) => {
     adminOnly(ctx);
@@ -359,12 +361,14 @@ export function createPlatform({ config, limits }) {
     return curator.withdraw(admin, ctx.params.task, ctx.params.id);
   });
   router.on('GET', '/api/curate/export/:token', (ctx) => {
-    limit.export(ctx.ip);
+    limit.exportIp(ctx.ip);
+    limit.exportToken(ctx.params.token);
     return curator.metadata(ctx.params.token);
   });
   router.on('GET', '/api/curate/export/:token/file', (ctx) => {
-    limit.export(ctx.ip);
-    streamFile(ctx.req, ctx.res, curator.file(ctx.params.token, ctx.url.searchParams.get('path')),
+    limit.exportIp(ctx.ip);
+    limit.exportToken(ctx.params.token);
+    return streamFile(ctx.req, ctx.res, curator.file(ctx.params.token, ctx.url.searchParams.get('path')),
       { 'Cache-Control': 'no-store', 'Content-Disposition': 'attachment', 'Content-Security-Policy': 'sandbox' });
   });
   // Inline edits (title/summary/model) from the works table; curated works stay repo-managed.
@@ -418,7 +422,7 @@ export function createPlatform({ config, limits }) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         return res.end('Not found');
       }
-      return streamFile(req, res, found, { 'Cache-Control': 'no-store', ...(found.type ? { 'Content-Type': found.type } : {}) });
+      return streamFile(req, res, found, { 'Cache-Control': 'no-store', 'Content-Security-Policy': 'sandbox allow-scripts', ...(found.type ? { 'Content-Type': found.type } : {}) });
     }
     // The admin app lives in this repository and takes precedence over the dist fallback.
     if (pathname === '/admin' || pathname.startsWith('/admin/')) {
@@ -478,7 +482,8 @@ export function createPlatform({ config, limits }) {
       if (!res.headersSent) return sendJson(res, 200, result ?? { ok: true });
     } catch (error) {
       if (res.headersSent) return res.destroy();
-      if (error instanceof HttpError) return sendJson(res, error.status, { error: error.message, ...(error.code ? { code: error.code } : {}) });
+      if (error instanceof HttpError) return sendJson(res, error.status, { error: error.message, ...(error.code ? { code: error.code } : {}) },
+        error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
       console.error(error);
       return sendJson(res, 500, { error: '服务器出错了，请稍后再试' });
     }

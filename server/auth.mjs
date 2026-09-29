@@ -80,10 +80,21 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
       const name = validName(rawName);
       const password = validPassword(rawPassword);
       const key = nameKey(name);
+      if (admins.includes(key) || q.userByKey.get(key)) fail(409, '这个用户名已被使用');
+      const salt = randomBytes(16).toString('hex');
+      const id = newId(8);
+      q.insertUser.run(id, name, key, 'member', salt, hashPassword(password, salt), Date.now());
+      return q.userById.get(id);
+    },
+
+    createAdmin(rawName, rawPassword) {
+      const name = validName(rawName);
+      const password = validPassword(rawPassword);
+      const key = nameKey(name);
       if (q.userByKey.get(key)) fail(409, '这个用户名已被使用');
       const salt = randomBytes(16).toString('hex');
       const id = newId(8);
-      q.insertUser.run(id, name, key, admins.includes(key) ? 'admin' : 'member', salt, hashPassword(password, salt), Date.now());
+      q.insertUser.run(id, name, key, 'admin', salt, hashPassword(password, salt), Date.now());
       return q.userById.get(id);
     },
 

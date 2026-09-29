@@ -98,7 +98,7 @@ async function call(base, method, path, { body, cookie, raw = false } = {}) {
 }
 
 function signIn(auth, name) {
-  const user = auth.register(name, 'correct horse');
+  const user = name === 'root' ? auth.createAdmin(name, 'correct horse') : auth.register(name, 'correct horse');
   const headers = new Map();
   auth.startSession({ setHeader: (key, value) => headers.set(key, value) }, user.id);
   return { cookie: headers.get('Set-Cookie').split(';')[0], user };
@@ -581,7 +581,8 @@ describe('auth dual shape', () => {
     assert.equal(me.data.user.role, null, 'members read role null in the old shape');
     assert.equal(me.data.user.email, null);
 
-    assert.equal((await call('admin', 'POST', '/api/auth/register', { username: 'root', password: 'correct horse' })).status, 200);
+    platform.auth.createAdmin('root', 'correct horse');
+    assert.equal((await call('admin', 'POST', '/api/auth/login', { username: 'root', password: 'correct horse' })).status, 200);
     assert.equal((await call('admin', 'GET', '/api/auth/me')).data.user.role, 'admin');
 
     // Platform rules are untouched: bad names still fail, no email is ever required.

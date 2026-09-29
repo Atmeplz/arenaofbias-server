@@ -37,7 +37,9 @@ describe('nomination and export', () => {
     site = createServer(platform.handleSite).listen(0, '127.0.0.1');
     await new Promise((resolve) => site.once('listening', resolve));
     base = `http://127.0.0.1:${site.address().port}`;
-    for (const name of ['root', 'alice']) assert.equal((await call(name, 'POST', '/api/auth/register', { name, password: 'correct horse' })).status, 200);
+    platform.auth.createAdmin('root', 'correct horse');
+    assert.equal((await call('root', 'POST', '/api/auth/login', { name: 'root', password: 'correct horse' })).status, 200);
+    assert.equal((await call('alice', 'POST', '/api/auth/register', { name: 'alice', password: 'correct horse' })).status, 200);
     const draft = await call('alice', 'POST', '/api/drafts?task=one&name=candidate.html', PAGE, true);
     assert.equal(draft.status, 200);
     const submission = await call('alice', 'POST', '/api/works', { draftId: draft.data.draft.id, confirmed: true,
@@ -86,6 +88,17 @@ describe('nomination and export', () => {
     assert.equal((await call('alice', 'GET', new URL(again.data.exportUrl).pathname)).status, 404);
   });
 
+  test('a single export token serves more than 120 file requests in one minute', async () => {
+    const nomination = await call('root', 'POST', `/api/admin/works/one/${id}/nominate`);
+    assert.equal(nomination.status, 200);
+    const path = new URL(nomination.data.exportUrl).pathname;
+    for (let i = 0; i < 121; i++) {
+      const response = await fetch(`${base}${path}/file?path=index.html`);
+      assert.equal(response.status, 200, `file request ${i + 1}`);
+      await response.arrayBuffer();
+    }
+  });
+
   test('new catalog sourceUpload retires the upload once', async () => {
     const nomination = await call('root', 'POST', `/api/admin/works/one/${id}/nominate`);
     assert.equal(nomination.status, 200);
@@ -123,6 +136,9 @@ describe('nomination and export', () => {
     }
     const inheritedId = await submit('inherited', true, true);
     const preservedId = await submit('preserved', true, false);
+    let invalidations = 0;
+    const invalidate = platform.arena.invalidate;
+    platform.arena.invalidate = () => { invalidations++; invalidate(); };
     platform.db.prepare(`INSERT INTO work_overrides (task_id, work_id, show_gallery, show_arena, updated_by, updated_at)
       VALUES ('one', 'preserved-curated', 0, 0, 'editor', ?)`).run(Date.now());
     for (const [curatedId, sourceUpload] of [['inherited-curated', inheritedId], ['preserved-curated', preservedId]]) {
@@ -139,6 +155,7 @@ describe('nomination and export', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(platform.db.prepare('SELECT curated_as FROM works WHERE id = ?').get(inheritedId).curated_as, 'one/inherited-curated');
     assert.equal(platform.db.prepare('SELECT curated_as FROM works WHERE id = ?').get(preservedId).curated_as, 'one/preserved-curated');
+    assert.ok(invalidations >= 1, 'takeover clears the leaderboard cache');
     const flags = platform.db.prepare('SELECT show_gallery, show_arena FROM work_overrides WHERE task_id = ? AND work_id = ?');
     assert.deepEqual({ ...flags.get('one', 'inherited-curated') }, { show_gallery: 1, show_arena: 1 });
     assert.deepEqual({ ...flags.get('one', 'preserved-curated') }, { show_gallery: 0, show_arena: 0 });

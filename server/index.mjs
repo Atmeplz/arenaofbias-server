@@ -2,6 +2,7 @@
 import { createServer } from 'node:http';
 import { createPlatform } from './app.mjs';
 import { config, limits } from './config.mjs';
+import { drainServers } from './shutdown.mjs';
 
 let platform;
 try {
@@ -31,11 +32,24 @@ for (const server of [site, content]) {
 site.listen(config.port, config.host, started);
 content.listen(config.contentPort, config.host, started);
 
+let stopping = false;
 async function shutdown() {
-  site.close();
-  content.close();
-  await platform.close();
-  process.exit(0);
+  if (stopping) return;
+  stopping = true;
+  const timeout = setTimeout(() => {
+    console.error('Shutdown timed out after 10 seconds; forcing exit');
+    process.exit(1);
+  }, 10_000);
+  try {
+    await drainServers([site, content]);
+    await platform.close();
+    clearTimeout(timeout);
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(timeout);
+    console.error('Shutdown failed', error);
+    process.exit(1);
+  }
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

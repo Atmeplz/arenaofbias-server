@@ -13,10 +13,13 @@ npm run fetch:datapack    # 按 datapack.json 安装 .datapack/versions/<SHA>
 npm run activate:datapack # 原子切换 .datapack/current；已是该版本时不操作
 npm start        # node server/index.mjs
 npm run admin -- <用户名>   # 提升某用户为管理员（server/cli.mjs）
+npm run admin -- --create <用户名> # 从标准输入读取密码并创建管理员
 npm test         # node --test test/*.test.mjs
 ```
 
 启动前需安装数据包。默认优先使用 `.datapack/current`，不存在时兼容旧 `./dist`；也可通过 `DIST_DIR` 指定。下载器与前端共用数据仓库维护的 `scripts/datapack-client.mjs` 副本（跨仓冒烟核对字节一致），流式解压、安装前校验，已安装版本不覆盖。
+
+管理员账号只能通过 CLI 新建，或将已有普通账号提权；提权可由获授权的管理员或 CLI 执行。`--create` 在交互终端输入密码时不回显，也可从标准输入读取；不接受命令行密码参数。公开注册对 `ADMIN_USERNAMES` 保留名与已占用用户名统一返回 `409`。
 
 - `same-prompt-gallery` 负责静态画廊前端与原作展示；`arenaofbias-server` 独占 API、账号/投票/投稿数据库和投稿沙盒；`arenaofbias-data` 负责生成供后端读取的馆藏数据包。后端不复制前端源码，也不提供画廊入口页面。
 - 本地与生产均需先取得数据仓库构建产物，将 `DIST_DIR` 指向它的根目录。若前端与后端各自持有数据包副本，部署时应确保两者版本一致。
