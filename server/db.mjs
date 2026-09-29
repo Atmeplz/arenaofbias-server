@@ -208,6 +208,14 @@ const MIGRATIONS = [
   `UPDATE works SET show_gallery = 0, audience = CASE WHEN show_arena = 1 THEN 'show1' ELSE 'hidden' END WHERE deleted_at IS NULL;`,
   // 「收录为馆藏」的标记：收录中的投稿退出所有公开列表和配对池，由馆藏双胞胎接管。
   `ALTER TABLE works ADD COLUMN curated_as TEXT;`,
+  // A partially prepared database may already have one of these nullable columns.
+  (db) => {
+    const columns = new Set(db.prepare('PRAGMA table_info(works)').all().map((column) => column.name));
+    for (const [name, type] of Object.entries({ nominated_at: 'INTEGER', nominated_by: 'TEXT',
+      export_token_hash: 'TEXT', export_expires_at: 'INTEGER' })) {
+      if (!columns.has(name)) db.exec(`ALTER TABLE works ADD COLUMN ${name} ${type}`);
+    }
+  },
 ];
 
 // Exported so tests can build databases at an intermediate schema version.
@@ -220,7 +228,8 @@ export function openDatabase(file) {
   const { user_version: version } = db.prepare('PRAGMA user_version').get();
   for (let step = version; step < MIGRATIONS.length; step++) {
     transaction(db, () => {
-      db.exec(MIGRATIONS[step]);
+      if (typeof MIGRATIONS[step] === 'function') MIGRATIONS[step](db);
+      else db.exec(MIGRATIONS[step]);
       db.exec(`PRAGMA user_version = ${step + 1}`);
     });
   }

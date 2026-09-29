@@ -109,6 +109,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       showGallery: Boolean(row.show_gallery),
       showArena: Boolean(row.show_arena),
       curatedAs: row.curated_as ?? null,
+      nominatedAt: row.nominated_at ?? null,
       calibrationArena: row.calibration_arena ? JSON.parse(row.calibration_arena) : null,
       reason: row.status_reason,
       title: row.title,
@@ -304,7 +305,7 @@ export function createLibrary({ db, catalog, config, limits }) {
       const override = work.curated ? q.override.get(work.taskId, work.id) : null;
       return {
         ...this.toPublic(work, { role: 'admin' }), source: work.curated ? 'curated' : 'upload',
-        ...(work.curated ? {} : { curatedAs: work.curatedAs ?? null }),
+        ...(work.curated ? {} : { curatedAs: work.curatedAs ?? null, nominatedAt: iso(work.nominatedAt) }),
         ...flags, calibration_gallery: work.curated ? (override?.calibration_gallery ? JSON.parse(override.calibration_gallery) : null) : work.trial.calibration ?? null,
         calibration_arena: work.curated ? (override?.calibration_arena ? JSON.parse(override.calibration_arena) : null) : work.calibrationArena,
         has_calibration_gallery: Boolean(work.curated ? override?.calibration_gallery : work.trial.calibration),

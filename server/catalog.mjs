@@ -30,7 +30,7 @@ function readSnapshot(root) {
     works: new Map(task.results.map((result) => {
       const model = models.get(result.model);
       return [result.id, {
-        taskId: task.id, id: result.id, curated: true, status: 'verified',
+        taskId: task.id, id: result.id, curated: true, status: 'verified', sourceUpload: result.sourceUpload ?? null,
         title: result.title, summary: result.summary ?? '', modelId: result.model,
         modelName: model?.name ?? result.model, vendor: model?.vendor ?? '',
         effort: result.effort ?? '', tool: result.sourceLabel ?? '', ownerId: null,
@@ -76,8 +76,25 @@ function readSnapshot(root) {
 
 export function createCatalog(dist, questions = null) {
   let current = null;
+  let onChange = null;
+  const handledRevisions = new Set();
+  const queuedRevisions = new Set();
   const snapshots = new Map();
   let devStat = '', devRevision = '';
+  function scheduleTakeover(snapshot) {
+    if (!onChange || handledRevisions.has(snapshot.revision) || queuedRevisions.has(snapshot.revision)) return;
+    queuedRevisions.add(snapshot.revision);
+    setImmediate(() => {
+      try {
+        onChange(snapshot);
+        handledRevisions.add(snapshot.revision);
+      } catch (error) {
+        console.error(`Catalog takeover failed for ${snapshot.revision}; will retry on refresh`, error);
+      } finally {
+        queuedRevisions.delete(snapshot.revision);
+      }
+    });
+  }
   function refresh() {
     const root = realpathSync(dist);
     const sourceFile = join(root, '.datapack-source.json');
@@ -105,9 +122,11 @@ export function createCatalog(dist, questions = null) {
       // Pruned release directories no longer serve anything; drop their snapshots.
       for (const key of snapshots.keys()) if (key !== root && !existsSync(join(key, 'data.json'))) snapshots.delete(key);
     }
+    scheduleTakeover(current);
     return current;
   }
   return {
+    onChange(callback) { onChange = callback; scheduleTakeover(refresh()); },
     refresh, snapshot: refresh,
     // The package a match was created with. A match without one, or whose release has been
     // pruned, can no longer be served or scored.

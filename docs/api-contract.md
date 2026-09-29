@@ -615,7 +615,10 @@ Show1 `/api/prompts` 在有 `arena` 覆盖时按题目映射合并 `commentary`�
 - **`POST /api/admin/inbox/register`** JSON 请求含 `id`、`task`、可选的 `title`、`summary`、`modelId` 或 `modelName`、`effort`；标题和模型名可从文件名建议值补齐。走现有草稿检查与投稿流程。缺省登记为 `unverified` 且两个门面均关闭；`publish: true` 时直接核验为 `verified`，缺省展览馆开启、竞技场关闭，可用 `show_gallery` / `show_arena` 指定。成功 `200`：`{ "work": <管理员作品视图> }`，移除收件箱文件并写 `inbox-register` audit；无效或已移除的 `id` 返回 `404`。
 - **`DELETE /api/admin/inbox?id=<收件箱 ID>`** 移除暂存文件，成功 `200`：`{ "ok": true }`，写 `inbox-remove` audit；文件不存在返回 `404`。
 - **`POST /api/admin/works/:task/:id/meta`** 仅编辑 SQLite 投稿，不编辑馆藏。JSON 请求可含 `title`、`summary`、`modelName`、`modelId`、`effort` 的任意非空组合；标题不能为空，`modelId` 须存在于目录。成功 `200`：`{ "work": <管理员作品视图> }`，写 `meta` audit；无效字段或内容返回 `400`，投稿不存在或目标为馆藏返回 `404 not_found`。
-- **`POST /api/admin/works/:task/:id/curate`** 仅对已核验、尚未收录、且题目在馆藏数据包内的 SQLite 投稿有效。服务端将作品和目录记录打包到配置的数据仓库 `CURATE_REPO_DIR` 的 `intake/<task>-<slug>` 分支，并执行 Git push；成功 `200`：`{ "curatedId": "<task>/<slug>", "branch": "intake/<task>-<slug>" }`。随后为原投稿设置 `curated_as`，使其退出公开列表及配对池；真实截图、审查、合并和发布仍须人工完成。作品不存在返回 `404 not_found`，状态或题目不符返回 `409`，数据仓库目录未配置返回 `503`。
+- **`POST /api/admin/works/:task/:id/nominate`** 仅对已核验、尚未收录、且题目在当前数据包内的投稿有效。生成有效期 14 天的随机导出令牌；重复提名会换发令牌，数据库仅存 SHA-256。返回 `{ "exportUrl": "<当前来源>/api/curate/export/<令牌>", "command": "npm run intake:from-server -- <exportUrl>" }`。提名不改变作品的公开展示状态。管理员列表以 `nominatedAt` 标记提名，以 `curatedAs` 标记已收录。
+- **`DELETE /api/admin/works/:task/:id/nominate`** 撤回提名并使令牌立即失效，返回 `{ "ok": true }`；已收录返回 `409`。提名和撤回均写审计记录。
+- **`GET /api/curate/export/:token`** 无需登录，返回 `task`、`id`、`title`、`summary`、`modelId`、`modelName`、`vendor`、`effort`、`tool`、`note`、`createdAt`、`root`、`entry`、`digest` 及 `files: [{ path, size, sha256 }]`。**`GET /api/curate/export/:token/file?path=<相对路径>`** 返回原始文件。两者每 IP 每分钟限流 120 次；无效、过期、撤回或已被数据包接管的令牌返回 `404`，非法文件路径返回 `404`。
+- 数据包中某馆藏结果带 `sourceUpload: "up-…"` 时，后端在数据包版本变化后异步设置对应投稿的 `curated_as`、清除提名字段、继承投稿的展览馆与竞技场开关（已有馆藏 override 不覆盖），并以系统身份写审计；成功接管的版本不重复更新，失败会记录并在下次刷新时重试。
 
 ### 3.20 Show1 猜模型接口
 
