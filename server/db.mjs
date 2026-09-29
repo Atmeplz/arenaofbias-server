@@ -216,6 +216,22 @@ const MIGRATIONS = [
       if (!columns.has(name)) db.exec(`ALTER TABLE works ADD COLUMN ${name} ${type}`);
     }
   },
+  (db) => {
+    const columns = new Set(db.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+    if (!columns.has('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+    if (!columns.has('email_verified_at')) db.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER');
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email COLLATE NOCASE) WHERE email IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS email_codes (
+        purpose TEXT NOT NULL CHECK (purpose IN ('bind', 'reset')),
+        email_hash TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_sent_at INTEGER NOT NULL,
+        PRIMARY KEY (purpose, email_hash)
+      );
+      CREATE INDEX IF NOT EXISTS email_codes_expiry ON email_codes(expires_at);`);
+  },
 ];
 
 // Exported so tests can build databases at an intermediate schema version.

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createArena } from './arena.mjs';
 import { createAuth } from './auth.mjs';
+import { createEmailAuth } from './auth-email.mjs';
 import { createCapturer } from './capture.mjs';
 import { createCatalog } from './catalog.mjs';
 import { createComments } from './comments.mjs';
@@ -21,6 +22,7 @@ import { createQuestions } from './questions.mjs';
 import { createProfile } from './profile.mjs';
 import { registerShow1Compat } from './show1compat.mjs';
 import { registerShow1Guess } from './show1/guess.mjs';
+import { turnstileEnabled, turnstileSiteKey } from './turnstile.mjs';
 
 export function createPlatform({ config, limits }) {
   const serverVersion = process.env.SERVER_VERSION || (() => {
@@ -35,6 +37,7 @@ export function createPlatform({ config, limits }) {
   const catalog = createCatalog(config.dist, questions);
   catalog.refresh();
   const auth = createAuth(db, { admins: config.admins, secureCookies: config.secureCookies, cookieSameSite: config.cookieSameSite, sessionTtl: limits.sessionTtl });
+  const emailAuth = createEmailAuth(db, auth);
   const library = createLibrary({ db, catalog, config, limits });
   const adminService = createAdmin({ db, catalog, library });
   const inbox = createInbox({ library, config, limits });
@@ -114,10 +117,11 @@ export function createPlatform({ config, limits }) {
 
   // Dual shape: the Show1 frontend posts `username` (alias of `name`) and reads
   // `username`/`email` back; the platform fields stay exactly as they were.
-  const compatUser = (user) => ({ ...auth.public(user), username: user.name, email: null });
+  const compatUser = (user) => ({ ...auth.public(user), username: user.name, email: user.email ?? null });
   router.on('POST', '/api/auth/register', async (ctx) => {
     limit.auth(ctx.ip);
     const body = await readJson(ctx.req);
+    await emailAuth.gate(body.turnstileToken, ctx.ip);
     const user = auth.register(body.name ?? body.username, body.password);
     auth.startSession(ctx.res, user.id);
     return { user: compatUser(user) };
@@ -130,8 +134,13 @@ export function createPlatform({ config, limits }) {
     return { user: compatUser(user) };
   });
   router.on('GET', '/api/auth/me', (ctx) => ({
-    user: ctx.user ? { id: ctx.user.id, username: ctx.user.name, role: ctx.user.role === 'admin' ? 'admin' : null, email: null } : null,
+    user: ctx.user ? { id: ctx.user.id, username: ctx.user.name, role: ctx.user.role === 'admin' ? 'admin' : null, email: ctx.user.email ?? null } : null,
   }));
+  router.on('GET', '/api/auth/turnstile', () => ({ siteKey: turnstileEnabled() ? turnstileSiteKey() : null }));
+  router.on('POST', '/api/auth/email/send', async (ctx) => emailAuth.send(await readJson(ctx.req), ctx.user, ctx.ip));
+  router.on('POST', '/api/auth/email/verify', async (ctx) => emailAuth.verify(await readJson(ctx.req), ctx.user));
+  router.on('POST', '/api/auth/email/bind', async (ctx) => ({ user: compatUser(emailAuth.bind(await readJson(ctx.req), ctx.user)) }));
+  router.on('POST', '/api/auth/password/reset', async (ctx) => emailAuth.reset(await readJson(ctx.req)));
   router.on('POST', '/api/auth/logout', (ctx) => {
     auth.endSession(ctx.req, ctx.res);
     return { ok: true };

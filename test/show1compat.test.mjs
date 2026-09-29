@@ -513,13 +513,7 @@ describe('show1 compat endpoints', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM page_views').get().n, 1, 'invalid payloads are dropped silently');
   }));
 
-  test('turnstile, email and share stubs answer with the old shapes', () => withServer({}, async ({ base }) => {
-    assert.deepEqual((await call(base, 'GET', '/api/auth/turnstile')).data, { siteKey: '' });
-    for (const path of ['/api/auth/email/send', '/api/auth/email/verify', '/api/auth/email/bind', '/api/auth/password/reset']) {
-      const response = await call(base, 'POST', path, { body: {} });
-      assert.equal(response.status, 501, path);
-      assert.deepEqual(response.data, { error: '邮箱功能暂未开放' });
-    }
+  test('share stubs remain unavailable', () => withServer({}, async ({ base }) => {
     for (const path of ['/api/share', '/api/share-work/up-aaaa0001']) {
       const response = await call(base, 'GET', path);
       assert.equal(response.status, 501, path);

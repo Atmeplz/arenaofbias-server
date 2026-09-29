@@ -22,6 +22,9 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
     upgradeHash: db.prepare('UPDATE users SET salt = ?, hash = ?, hash_params = NULL WHERE id = ?'),
     setRole: db.prepare('UPDATE users SET role = ? WHERE id = ?'),
     setNickname: db.prepare('UPDATE users SET nickname = ? WHERE id = ?'),
+    setEmail: db.prepare('UPDATE users SET email = ?, email_verified_at = ? WHERE id = ?'),
+    resetPassword: db.prepare('UPDATE users SET salt = ?, hash = ?, hash_params = NULL WHERE id = ?'),
+    deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
     insertSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
     session: db.prepare('SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ?'),
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
@@ -59,6 +62,18 @@ export function createAuth(db, { admins, secureCookies, cookieSameSite = 'Lax', 
       if (!nickname || nickname.length > 24 || /[\u0000-\u001f\u007f]/.test(nickname)) fail(400, '昵称为 1–24 个字，不能包含换行或控制字符');
       q.setNickname.run(nickname, user.id);
       return q.userById.get(user.id);
+    },
+
+    bindEmail(userId, email) {
+      q.setEmail.run(email, Date.now(), userId);
+      return q.userById.get(userId);
+    },
+
+    resetPassword(userId, password) {
+      const valid = validPassword(password);
+      const salt = randomBytes(16).toString('hex');
+      q.resetPassword.run(salt, hashPassword(valid, salt), userId);
+      q.deleteUserSessions.run(userId);
     },
 
     register(rawName, rawPassword) {
